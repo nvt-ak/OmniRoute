@@ -269,6 +269,10 @@ export function pickReportedCostUsd(usage: UsageLike | null | undefined): number
   return undefined;
 }
 
+function toFiniteTokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 export function filterUsageForFormat(usage: UsageLike | null | undefined, targetFormat: string) {
   if (!usage || typeof usage !== "object") return usage;
 
@@ -305,13 +309,38 @@ export function filterUsageForFormat(usage: UsageLike | null | undefined, target
     ) {
       convertedUsage.total_tokens = convertedUsage.prompt_tokens + convertedUsage.completion_tokens;
     }
-    // Rebuild prompt_tokens_details.cached_tokens from flat cached_tokens / cache_read_input_tokens (#8171)
-    const flatCached = convertedUsage.cached_tokens ?? convertedUsage.cache_read_input_tokens;
-    if (flatCached !== undefined && !convertedUsage.prompt_tokens_details?.cached_tokens) {
-      convertedUsage.prompt_tokens_details = {
-        ...convertedUsage.prompt_tokens_details,
-        cached_tokens: flatCached,
-      };
+
+    // Claude→OpenAI prompt-cache cross-map (#8171): the OpenAI whitelist below only emits
+    // cached_tokens + prompt_tokens_details, so the Claude-style flat cache counters
+    // must be projected here or they are dropped from the SSE usage chunk — the cause
+    // of clients recording cache_read = 0 on every OmniRoute-proxied Claude request.
+    const cacheReadInput = toFiniteTokenCount(convertedUsage.cache_read_input_tokens);
+    const cacheCreationInput = toFiniteTokenCount(convertedUsage.cache_creation_input_tokens);
+    const existingDetails =
+      convertedUsage.prompt_tokens_details &&
+      typeof convertedUsage.prompt_tokens_details === "object" &&
+      !Array.isArray(convertedUsage.prompt_tokens_details)
+        ? convertedUsage.prompt_tokens_details
+        : undefined;
+    const cachedTokens =
+      toFiniteTokenCount(existingDetails?.cached_tokens) ||
+      toFiniteTokenCount(convertedUsage.cached_tokens) ||
+      cacheReadInput;
+    if (cachedTokens) {
+      // A provider-reported literal 0 must not block the rebuild (#8171): the flat
+      // Claude counters are the authoritative source when they carry a real value.
+      if (!convertedUsage.cached_tokens) {
+        convertedUsage.cached_tokens = cachedTokens;
+      }
+      const details: UsageTokenDetail = { ...(existingDetails ?? {}) };
+      if (!details.cached_tokens) {
+        details.cached_tokens = cachedTokens;
+      }
+      // cache_creation has no OpenAI-spec slot; surfaced as a non-standard extension.
+      if (cacheCreationInput && !details.cache_creation_tokens) {
+        details.cache_creation_tokens = cacheCreationInput;
+      }
+      convertedUsage.prompt_tokens_details = details;
     }
   }
 

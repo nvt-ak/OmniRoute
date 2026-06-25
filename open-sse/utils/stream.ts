@@ -1963,6 +1963,15 @@ export function createSSEStream(options: StreamOptions = {}) {
                     clientPayloadCollector.push(parsed);
                   }
                 } else if (isClaudeSSE) {
+                  // A relay can emit `event: content_block_delta\ndata: {}`; the raw `data: {}`
+                  // is forwarded verbatim at the `if (!injectedUsage)` fallback below and crashes
+                  // strict Anthropic clients (zod discriminatedUnion on `type`, path ["type"]).
+                  // Mirror the translation path's hasValuableContent() filter here; clearing the
+                  // event prefix prevents the orphaned `event:` line leaking onto the next chunk.
+                  if (!hasValuableContent(parsed, FORMATS.CLAUDE)) {
+                    clearPendingPassthroughEvent();
+                    continue;
+                  }
                   // Claude SSE: extract usage, track content, forward as-is
                   const thinkingSignatureInjected = injectThinkingSignature(parsed, provider);
                   const extracted = extractUsage(parsed);
