@@ -398,6 +398,9 @@ export function hasValuableContent(chunk: Record<string, unknown>, format: strin
 
   // Claude format
   if (format === FORMATS.CLAUDE) {
+    // A typeless Claude object (e.g. `{}`) serializes to `data: {}` and crashes
+    // strict Anthropic clients with "No matching discriminator" at path ["type"].
+    if (typeof chunk.type !== "string" || chunk.type.length === 0) return false;
     const isContentBlockDelta = chunk.type === "content_block_delta";
     if (isContentBlockDelta) {
       const delta = isRecord(chunk.delta) ? chunk.delta : {};
