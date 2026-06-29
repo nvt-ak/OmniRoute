@@ -491,7 +491,11 @@ export function formatSSE(data: unknown, sourceFormat: string): string {
   data = cleanPerfMetrics(data);
 
   // Claude format
-  if (sourceFormat === FORMATS.CLAUDE && isRecord(data) && data.type) {
+  if (sourceFormat === FORMATS.CLAUDE && isRecord(data)) {
+    // Drop typeless Claude payloads: serializing `{}` here crashes strict Anthropic
+    // clients (zod discriminatedUnion on `type`, path ["type"]). Last-line defense for
+    // every Claude SSE path, not just passthrough.
+    if (typeof data.type !== "string" || data.type.length === 0) return "";
     return `event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`;
   }
 

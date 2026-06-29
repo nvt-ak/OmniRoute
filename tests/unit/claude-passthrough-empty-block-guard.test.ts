@@ -8,8 +8,25 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { FORMATS } from "../../open-sse/translator/formats.ts";
+import { formatSSE } from "../../open-sse/utils/streamHelpers.ts";
 
 const { createPassthroughStreamWithLogger } = await import("../../open-sse/utils/stream.ts");
+
+test("formatSSE drops typeless Claude payloads instead of emitting `data: {}`", () => {
+  assert.equal(formatSSE({}, FORMATS.CLAUDE), "", "empty object must be dropped");
+  assert.equal(formatSSE({ type: "" }, FORMATS.CLAUDE), "", "empty-string type must be dropped");
+  assert.equal(
+    formatSSE({ index: 0, delta: { text: "x" } }, FORMATS.CLAUDE),
+    "",
+    "object missing `type` must be dropped"
+  );
+  const valid = formatSSE(
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } },
+    FORMATS.CLAUDE
+  );
+  assert.ok(valid.includes("event: content_block_delta"), "valid Claude event must pass through");
+  assert.ok(valid.includes('"text":"hi"'), "valid delta text must pass through");
+});
 
 async function runPassthrough(rawSSE: string): Promise<string> {
   const stream = createPassthroughStreamWithLogger(
