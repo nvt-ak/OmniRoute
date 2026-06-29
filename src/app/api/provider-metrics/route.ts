@@ -5,6 +5,7 @@ import { buildErrorBody } from "@omniroute/open-sse/utils/error.ts";
 
 import { getProviderMetrics, type ProviderMetricRow } from "@/lib/db/callLogStats";
 import { foldMetricRowsByFamily } from "@/lib/providerFamilyAgg";
+import { getPendingProviderCounts } from "@/lib/usageDb";
 import { toNumber, toNumberOrNull } from "@/shared/utils/numeric";
 
 const logger = pino({ name: "provider-metrics-api" });
@@ -82,14 +83,17 @@ export async function GET() {
     const familyMetrics = Object.fromEntries(
       foldMetricRowsByFamily(rows).map((row) => [row.provider, toProviderMetric(row)])
     );
+    const pending = getPendingProviderCounts();
 
     return NextResponse.json({
       metrics,
       familyMetrics,
+      pending,
       topology: {
         providers: Object.keys(metrics),
         lastProvider,
         errorProvider,
+        activeProviders: Object.keys(pending),
       },
     });
   } catch (error) {

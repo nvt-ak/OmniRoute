@@ -17,15 +17,18 @@ vi.mock("next/dynamic", () => ({
     <div
       data-testid="provider-topology"
       data-providers={String((props.providers as unknown[])?.length ?? 0)}
+      data-active={String((props.activeRequests as unknown[])?.length ?? 0)}
     />
   ),
 }));
 vi.mock("@/shared/components", () => ({
   Card: ({ children }: { children: React.ReactNode }) => <div data-testid="card">{children}</div>,
 }));
-const liveRequestsMock = vi.fn(() => ({ activeRequests: [] as unknown[] }));
+
+// The live WS feed is stubbed so the merge with the poll-derived prop is deterministic.
+const liveRequests: Array<{ provider: string; model: string }> = [];
 vi.mock("@/hooks/useLiveDashboard", () => ({
-  useLiveRequests: () => liveRequestsMock(),
+  useLiveRequests: () => ({ activeRequests: liveRequests }),
 }));
 
 const { HomeProviderTopologySection } =
@@ -43,6 +46,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  liveRequests.length = 0;
   vi.clearAllMocks();
 });
 
@@ -70,4 +74,69 @@ it("renders the topology card and forwards providers to ProviderTopology", () =>
     .map((element) => element.textContent)
     .filter(Boolean);
   expect(legend).toEqual(["Active", "Recent", "Error"]);
+});
+
+it("forwards poll-derived active requests to ProviderTopology", () => {
+  act(() => {
+    root.render(
+      <HomeProviderTopologySection
+        providers={[{ id: "p1", provider: "openai", name: "OpenAI" }]}
+        activeRequests={[
+          { provider: "openai", model: "" },
+          { provider: "anthropic", model: "" },
+        ]}
+        lastProvider="openai"
+        errorProvider=""
+      />
+    );
+  });
+
+  const topology = container.querySelector("[data-testid='provider-topology']");
+  expect(topology?.getAttribute("data-active")).toBe("2");
+});
+
+it("merges the live feed with poll-derived requests, deduped per provider", () => {
+  liveRequests.push({ provider: "openai", model: "gpt-4o" });
+
+  act(() => {
+    root.render(
+      <HomeProviderTopologySection
+        providers={[{ id: "p1", provider: "openai", name: "OpenAI" }]}
+        activeRequests={[
+          { provider: "openai", model: "" },
+          { provider: "anthropic", model: "" },
+        ]}
+        lastProvider="openai"
+        errorProvider=""
+      />
+    );
+  });
+
+  // openai comes from the socket (with its model), anthropic only from polling:
+  // the poll-only duplicate for openai is dropped, so two entries reach the topology.
+  const topology = container.querySelector("[data-testid='provider-topology']");
+  expect(topology?.getAttribute("data-active")).toBe("2");
+  expect(container.querySelector("p")?.textContent).toBe("2 active · 0 error");
+});
+
+// The WS payload is unnormalized while the polled ids ran through
+// normalizeProviderId, so a case difference must not resurrect a duplicate node
+// or double-count the provider in the "{active} active" header.
+it("dedupes across feeds when the live provider id differs only by case", () => {
+  liveRequests.push({ provider: "OpenAI", model: "gpt-4o" });
+
+  act(() => {
+    root.render(
+      <HomeProviderTopologySection
+        providers={[{ id: "p1", provider: "openai", name: "OpenAI" }]}
+        activeRequests={[{ provider: "openai", model: "" }]}
+        lastProvider="openai"
+        errorProvider=""
+      />
+    );
+  });
+
+  const topology = container.querySelector("[data-testid='provider-topology']");
+  expect(topology?.getAttribute("data-active")).toBe("1");
+  expect(container.querySelector("p")?.textContent).toBe("1 active · 0 error");
 });
