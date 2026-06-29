@@ -24,6 +24,7 @@ export {
   updatePendingRequest,
   updatePendingRequestStreamChunks,
   finalizePendingRequest,
+  getPendingProviderCounts,
   getUsageDb,
   saveRequestUsage,
   getUsageHistory,
