@@ -195,9 +195,7 @@ export default function AddCompatibleProviderModal({
     mode === "openai" ? "/v1/chat/completions" : mode === "cc" ? CC_DEFAULT_CHAT_PATH : "/messages";
   const chatPathHint = mode === "cc" ? t("ccCompatibleChatPathHint") : t("chatPathHint");
   const advancedId = `advanced-settings-${mode}`;
-  const hasRequiredFields = Boolean(
-    formData.name.trim() && formData.prefix.trim() && formData.baseUrl.trim()
-  );
+  const hasRequiredFields = Boolean(formData.name.trim() && formData.baseUrl.trim());
   const canValidate = Boolean(checkKey.trim() && formData.baseUrl.trim());
 
   const resetAfterCreate = () => {

@@ -5725,7 +5725,7 @@
     "prefixLabel": "Prefix",
     "baseUrlLabel": "Base URL",
     "apiTypeLabel": "API Type",
-    "prefixHint": "Required. Unique prefix for model names.",
+    "prefixHint": "Optional. Unique prefix for model names.",
     "providerIdSuffixLabel": "Provider ID suffix",
     "providerIdSuffixHint": "Optional. Appended to the provider ID instead of a random one (letters, numbers, -, _ and . only). Leave blank for a random ID. Cannot be changed later.",
     "providerIdConflict": "A provider with this ID already exists. Choose a different ID suffix.",

@@ -377,11 +377,13 @@ const providerIdSuffixSchema = z
 
 export const createProviderNodeSchema = z
   .object({
-    // #6874: name/prefix are required in general, but a `preset` (e.g.
-    // "vibeproxy-openai") supplies both — enforced conditionally below
+    // #6874: name is required in general, but a `preset` (e.g.
+    // "vibeproxy-openai") supplies it — enforced conditionally below
     // instead of unconditionally here.
     name: z.string().trim().optional().or(z.literal("")),
-    prefix: z.string().trim().optional().or(z.literal("")),
+    // Prefix is optional: when omitted the node is stored with a NULL prefix
+    // and model names are not prefixed.
+    prefix: z.string().trim().min(1).optional().or(z.literal("")),
     apiType: z
       .enum([
         "chat",
@@ -457,18 +459,13 @@ export const createProviderNodeSchema = z
         path: ["name"],
       });
     }
-    if (!value.prefix || !value.prefix.trim()) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Prefix is required",
-        path: ["prefix"],
-      });
-    } else if (isReservedProviderPrefix(value.prefix.trim())) {
+    if (value.prefix && value.prefix.trim() && isReservedProviderPrefix(value.prefix.trim())) {
       // Reserved-prefix guard (tokenrouter bug): the runtime model resolver skips
       // compatible-node lookup for built-in registry ids/aliases, so a node
       // created with such a prefix could never be reached by it and silently
       // routed requests to the built-in provider instead. Reject at the write
-      // path. Case-sensitive to match the runtime guard exactly.
+      // path. Case-sensitive to match the runtime guard exactly. Prefix is
+      // optional, so this only fires when one is actually supplied.
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: reservedProviderPrefixMessage(value.prefix.trim()),
@@ -487,7 +484,7 @@ export const createProviderNodeSchema = z
 export const updateProviderNodeSchema = z
   .object({
     name: z.string().trim().min(1, "Name is required"),
-    prefix: z.string().trim().min(1, "Prefix is required"),
+    prefix: z.string().trim().min(1).optional().or(z.literal("")),
     apiType: z
       .enum([
         "chat",
@@ -511,11 +508,12 @@ export const updateProviderNodeSchema = z
   .superRefine((value, ctx) => {
     // Reserved-prefix guard (tokenrouter bug) — same rationale as the guard in
     // createProviderNodeSchema: renaming a node's prefix onto a built-in
-    // registry id/alias would make it unreachable via that prefix.
-    if (isReservedProviderPrefix(value.prefix)) {
+    // registry id/alias would make it unreachable via that prefix. Prefix is
+    // optional, so this only fires when one is actually supplied.
+    if (value.prefix && isReservedProviderPrefix(value.prefix.trim())) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: reservedProviderPrefixMessage(value.prefix),
+        message: reservedProviderPrefixMessage(value.prefix.trim()),
         path: ["prefix"],
       });
     }

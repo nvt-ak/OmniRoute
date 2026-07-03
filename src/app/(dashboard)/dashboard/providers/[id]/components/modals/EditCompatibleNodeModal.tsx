@@ -134,7 +134,7 @@ export default function EditCompatibleNodeModal({
   ];
 
   const handleSubmit = async () => {
-    if (!formData.name.trim() || !formData.prefix.trim() || !formData.baseUrl.trim()) return;
+    if (!formData.name.trim() || !formData.baseUrl.trim()) return;
     const iconUrl = formData.iconUrl.trim();
     if (!isValidProviderIconUrl(iconUrl)) {
       setIconUrlError(t("iconUrlInvalid"));
@@ -428,9 +428,7 @@ export default function EditCompatibleNodeModal({
           <Button
             onClick={handleSubmit}
             fullWidth
-            disabled={
-              !formData.name.trim() || !formData.prefix.trim() || !formData.baseUrl.trim() || saving
-            }
+            disabled={!formData.name.trim() || !formData.baseUrl.trim() || saving}
           >
             {saving ? t("saving") : t("save")}
           </Button>
