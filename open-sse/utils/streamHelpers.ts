@@ -407,7 +407,12 @@ export function hasValuableContent(chunk: Record<string, unknown>, format: strin
       const hasText = typeof delta.text === "string" && delta.text.length > 0;
       const hasThinking = typeof delta.thinking === "string" && delta.thinking.length > 0;
       const hasInputJson = typeof delta.partial_json === "string" && delta.partial_json.length > 0;
-      if (!hasText && !hasThinking && !hasInputJson) return false;
+      // A signature_delta carries the thinking block's cryptographic signature in
+      // `delta.signature` with no text/thinking/partial_json. Dropping it as "empty"
+      // strips the signature from the client's thinking block, so the next multi-turn
+      // replay sends an unsigned thinking block that Anthropic then rejects.
+      const hasSignature = typeof delta.signature === "string" && delta.signature.length > 0;
+      if (!hasText && !hasThinking && !hasInputJson && !hasSignature) return false;
     }
     return true;
   }

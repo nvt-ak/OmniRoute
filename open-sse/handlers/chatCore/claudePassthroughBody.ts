@@ -28,7 +28,10 @@ import {
 } from "./claudeSystemRole.ts";
 import type { ClaudeMessage } from "./claudeMessageTypes.ts";
 import { stripOutputConfigFormatForCompat } from "./outputConfigFormatStrip.ts";
-import { stripClaudeRejectedTopLevelFields } from "./passthroughHelpers.ts";
+import {
+  sanitizeClaudePassthroughThinkingBlocks,
+  stripClaudeRejectedTopLevelFields,
+} from "./passthroughHelpers.ts";
 
 type LoggerLike = { debug?: (...args: unknown[]) => void } | null | undefined;
 
@@ -81,6 +84,13 @@ export function buildClaudePassthroughBody({
     // Manual `enabled` thinking needs a thinking block on the final tool_use turn; with none
     // left (unsigned ones were dropped) turn thinking off instead of injecting a placeholder.
     disableManualThinkingWithoutFinalBlock(translatedBody as ClaudeRequestBody);
+
+    // Preserve model-safe thinking verbatim; drop signatures from another model or
+    // provider rather than rewriting blocks Anthropic rejects when modified.
+    translatedBody.messages = sanitizeClaudePassthroughThinkingBlocks(
+      translatedBody.messages,
+      effectiveModel
+    ) as typeof translatedBody.messages;
 
     stripClaudeRejectedTopLevelFields(translatedBody, clientHeaders);
   }
