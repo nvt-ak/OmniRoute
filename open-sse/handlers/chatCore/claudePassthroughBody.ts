@@ -24,7 +24,10 @@ import {
 } from "./claudeSystemRole.ts";
 import type { ClaudeMessage } from "./claudeMessageTypes.ts";
 import { stripOutputConfigFormatForCompat } from "./outputConfigFormatStrip.ts";
-import { stripClaudeRejectedTopLevelFields } from "./passthroughHelpers.ts";
+import {
+  sanitizeClaudePassthroughThinkingBlocks,
+  stripClaudeRejectedTopLevelFields,
+} from "./passthroughHelpers.ts";
 
 type LoggerLike = { debug?: (...args: unknown[]) => void } | null | undefined;
 
@@ -73,6 +76,13 @@ export function buildClaudePassthroughBody({
     // Also drops foreign server_tool_use ids (z.ai `call_…`) that fail ^srvtoolu_ (9router#3685).
     translatedBody.messages = sanitizeAnthropicPassthroughHistory(
       translatedBody.messages
+    ) as typeof translatedBody.messages;
+
+    // Preserve model-safe thinking verbatim; drop signatures from another model or
+    // provider rather than rewriting blocks Anthropic rejects when modified.
+    translatedBody.messages = sanitizeClaudePassthroughThinkingBlocks(
+      translatedBody.messages,
+      effectiveModel
     ) as typeof translatedBody.messages;
 
     stripClaudeRejectedTopLevelFields(translatedBody, clientHeaders);
