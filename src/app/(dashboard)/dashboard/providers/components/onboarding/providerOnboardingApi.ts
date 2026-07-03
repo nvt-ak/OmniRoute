@@ -41,7 +41,7 @@ export type OnboardingProviderNodes = {
 export type CreateCompatibleProviderNodeInput = {
   mode: CompatibleNodeMode;
   name: string;
-  prefix: string;
+  prefix?: string;
   baseUrl: string;
   apiType?: string;
   chatPath?: string;
@@ -61,7 +61,7 @@ export type CreateOnboardingConnectionInput = {
 const compatibleProviderNodeInputSchema = z.object({
   mode: z.enum(["openai", "anthropic", "cc"]),
   name: z.string().trim().min(1, "Name is required"),
-  prefix: z.string().trim().min(1, "Prefix is required"),
+  prefix: z.string().trim().min(1).optional().or(z.literal("")),
   baseUrl: z.string().trim().min(1, "Base URL is required"),
   apiType: z
     .enum([
