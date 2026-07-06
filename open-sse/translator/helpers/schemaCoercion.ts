@@ -705,6 +705,13 @@ function mergeClaudeRequired(target: string[], seen: Set<string>, branchRequired
   }
 }
 
+/** String entries of a branch's `required`; `[]` when absent or malformed. */
+function claudeBranchRequired(branch: JsonRecord): string[] {
+  const required = branch.required;
+  if (!Array.isArray(required)) return [];
+  return required.filter((name): name is string => typeof name === "string");
+}
+
 /**
  * Whether a tool schema carries a root-level `anyOf` / `oneOf` / `allOf`.
  *
@@ -728,10 +735,15 @@ export function hasRootLevelSchemaUnion(schema: unknown): boolean {
  *
  * The flattening mirrors the union handling CLIProxyAPI applies on the same
  * wire hop: object-compatible branches contribute their `properties` (first
- * branch wins on a name collision), the root is pinned to `type: "object"`, and
- * only `allOf` — whose branches all apply at once — contributes `required`.
- * `anyOf` / `oneOf` branch requirements are alternatives, so promoting them
- * would refuse calls the original schema accepts.
+ * branch wins on a name collision), and the root is pinned to `type: "object"`.
+ *
+ * `required` is keyword-sensitive. `allOf` branches all apply at once, so their
+ * requirements are cumulative. `anyOf` / `oneOf` branches are alternatives, so
+ * only the *intersection* over that keyword's object-compatible branches is
+ * promoted — a field every branch demands is present whichever branch matches,
+ * while a branch-specific field would refuse calls the original schema accepts.
+ * Each disjunctive keyword is intersected on its own: two sibling unions are
+ * independent constraints, so requirements are unioned across them.
  *
  * Schemas without a root union are returned untouched, and nested unions are
  * never rewritten.
@@ -756,6 +768,10 @@ export function normalizeClaudeToolInputSchema(schema: unknown): unknown {
     delete result[keyword];
     if (!Array.isArray(branches)) continue;
 
+    // Requirements shared by every object-compatible branch of a disjunctive
+    // keyword; `undefined` until the first such branch is seen.
+    let sharedRequired: string[] | undefined;
+
     for (const branch of branches) {
       if (!isPlainObject(branch) || !claudeUnionBranchCanBeObject(branch)) continue;
       if (isPlainObject(branch.properties)) {
@@ -763,13 +779,25 @@ export function normalizeClaudeToolInputSchema(schema: unknown): unknown {
           if (!hasOwn(properties, name)) properties[name] = propertySchema;
         }
       }
-      if (keyword === "allOf") mergeClaudeRequired(required, requiredSeen, branch.required);
+      if (keyword === "allOf") {
+        mergeClaudeRequired(required, requiredSeen, branch.required);
+        continue;
+      }
+      const branchRequired = claudeBranchRequired(branch);
+      sharedRequired =
+        sharedRequired === undefined
+          ? branchRequired
+          : sharedRequired.filter((name) => branchRequired.includes(name));
     }
+
+    if (sharedRequired !== undefined) mergeClaudeRequired(required, requiredSeen, sharedRequired);
   }
 
   result.type = "object";
   result.properties = properties;
   if (required.length > 0) result.required = required;
+  // A malformed root `required` copied from the source would re-trigger the 400.
+  else delete result.required;
 
   return result;
 }
