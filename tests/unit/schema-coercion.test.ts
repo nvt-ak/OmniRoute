@@ -6,9 +6,15 @@ import {
   injectEmptyReasoningContentForToolCalls,
   injectOptionalEnumOmissionForTools,
   injectOptionalEnumOmissionSentinel,
+  sanitizeClaudeToolSchema,
   sanitizeToolDescription,
   sanitizeToolDescriptions,
 } from "../../open-sse/translator/helpers/schemaCoercion.ts";
+
+interface DeepRecord {
+  [key: string]: DeepRecord & unknown;
+}
+const rec = (value: unknown): DeepRecord => value as DeepRecord;
 
 test("coerceSchemaNumericFields converts string numbers to actual numbers", () => {
   const schema = {
@@ -25,9 +31,9 @@ test("coerceSchemaNumericFields converts string numbers to actual numbers", () =
 
   const result = coerceSchemaNumericFields(schema);
 
-  assert.strictEqual((result as any).minimum, 5);
-  (assert as any).strictEqual((result as any).properties.items.minItems, 1);
-  (assert as any).strictEqual((result as any).properties.items.maxItems, 2);
+  assert.strictEqual(rec(result).minimum, 5);
+  assert.strictEqual(rec(result).properties.items.minItems, 1);
+  assert.strictEqual(rec(result).properties.items.maxItems, 2);
 });
 
 test("coerceSchemaNumericFields ignores non-numeric strings", () => {
@@ -38,8 +44,8 @@ test("coerceSchemaNumericFields ignores non-numeric strings", () => {
 
   const result = coerceSchemaNumericFields(schema);
 
-  (assert as any).strictEqual((result as any).minimum, "abc");
-  assert.strictEqual((result as any).maximum, 10.5);
+  assert.strictEqual(rec(result).minimum, "abc");
+  assert.strictEqual(rec(result).maximum, 10.5);
 });
 
 test("coerceToolSchemas applies coercion to OpenAI tools", () => {
@@ -79,7 +85,7 @@ test("sanitizeToolDescription converts null to empty string (OpenAI format)", ()
     function: { name: "test", description: null, parameters: {} },
   };
   const result = sanitizeToolDescription(tool);
-  assert.equal((result as any).function.description, "");
+  assert.equal(rec(result).function.description, "");
 });
 
 test("sanitizeToolDescription converts number to string (OpenAI format)", () => {
@@ -88,13 +94,13 @@ test("sanitizeToolDescription converts number to string (OpenAI format)", () => 
     function: { name: "test", description: 42, parameters: {} },
   };
   const result = sanitizeToolDescription(tool);
-  assert.equal((result as any).function.description, "42");
+  assert.equal(rec(result).function.description, "42");
 });
 
 test("sanitizeToolDescription handles Claude format", () => {
   const tool = { name: "test", description: null, input_schema: {} };
   const result = sanitizeToolDescription(tool);
-  assert.equal((result as any).description, "");
+  assert.equal(rec(result).description, "");
 });
 
 test("sanitizeToolDescription preserves valid string descriptions", () => {
@@ -103,7 +109,7 @@ test("sanitizeToolDescription preserves valid string descriptions", () => {
     function: { name: "test", description: "A useful tool", parameters: {} },
   };
   const result = sanitizeToolDescription(tool);
-  assert.equal((result as any).function.description, "A useful tool");
+  assert.equal(rec(result).function.description, "A useful tool");
 });
 
 test("sanitizeToolDescriptions works on arrays", () => {
@@ -268,4 +274,83 @@ test("injectOptionalEnumOmissionForTools: Chat Completions {function:{parameters
     result[0].function.parameters.properties.isolation.enum,
     ["worktree", "remote"]
   );
+});
+
+// Anthropic rejects `oneOf`/`allOf`/`anyOf` at the TOP LEVEL of a tool
+// input_schema (`tools.N.custom.input_schema: input_schema does not support
+// oneOf, allOf, or anyOf at the top level`). Nested combinators remain valid
+// and must be preserved. See production incident 2026-07-06 (opencode + MCP
+// tools routed to a claude OAuth account).
+test("sanitizeClaudeToolSchema flattens top-level allOf into merged properties", () => {
+  const schema = {
+    type: "object",
+    allOf: [
+      { properties: { a: { type: "string" } }, required: ["a"] },
+      { properties: { b: { type: "number" } }, required: ["b"] },
+    ],
+  };
+
+  const result = rec(sanitizeClaudeToolSchema(schema));
+
+  assert.strictEqual(result.allOf, undefined, "top-level allOf must be removed");
+  assert.strictEqual(result.type, "object");
+  assert.deepStrictEqual(Object.keys(result.properties as object).sort(), ["a", "b"]);
+  assert.deepStrictEqual((result.required as unknown as string[]).sort(), ["a", "b"]);
+});
+
+test("sanitizeClaudeToolSchema flattens top-level anyOf into an object schema", () => {
+  const schema = {
+    anyOf: [
+      { type: "null" },
+      { type: "object", properties: { x: { type: "string" } }, required: ["x"] },
+    ],
+  };
+
+  const result = rec(sanitizeClaudeToolSchema(schema));
+
+  assert.strictEqual(result.anyOf, undefined, "top-level anyOf must be removed");
+  assert.strictEqual(result.type, "object");
+  assert.ok(result.properties && "x" in result.properties);
+});
+
+test("sanitizeClaudeToolSchema flattens top-level oneOf into an object schema", () => {
+  const schema = {
+    description: "pick one",
+    oneOf: [
+      { type: "object", properties: { m: { type: "string" } } },
+      { type: "object", properties: { n: { type: "number" } } },
+    ],
+  };
+
+  const result = rec(sanitizeClaudeToolSchema(schema));
+
+  assert.strictEqual(result.oneOf, undefined, "top-level oneOf must be removed");
+  assert.strictEqual(result.type, "object");
+  assert.ok(result.properties, "flattened schema must expose properties");
+});
+
+test("sanitizeClaudeToolSchema preserves NESTED anyOf inside a property", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      value: {
+        anyOf: [{ type: "string" }, { type: "number" }],
+      },
+    },
+  };
+
+  const result = rec(sanitizeClaudeToolSchema(schema));
+
+  assert.ok(Array.isArray(result.properties.value.anyOf), "nested anyOf must survive");
+  assert.strictEqual(result.properties.value.anyOf.length, 2);
+});
+
+test("sanitizeClaudeToolSchema returns a valid object schema when a combinator has no usable variant", () => {
+  const schema = { anyOf: [{ type: "null" }] };
+
+  const result = rec(sanitizeClaudeToolSchema(schema));
+
+  assert.strictEqual(result.anyOf, undefined);
+  assert.strictEqual(result.type, "object");
+  assert.deepStrictEqual(result.properties, {});
 });

@@ -506,12 +506,14 @@ export function openaiToClaudeRequest(
             : rawSchema;
         // Flatten a root-level anyOf/oneOf/allOf: Anthropic refuses it outright with
         // "input_schema does not support oneOf, allOf, or anyOf at the top level" (#13552).
-        const normalizedSchema = normalizeClaudeToolInputSchema(withProperties);
+        // Only the root is flattened (nested combinators stay valid). Covers the
+        // API-key claude path, which skips the OAuth-only sanitizeClaudeToolSchemas.
+        const safeSchema = normalizeClaudeToolInputSchema(withProperties);
 
         return {
           name: toolName,
           description: toolData.description || "",
-          input_schema: normalizedSchema,
+          input_schema: safeSchema,
           // Anthropic tools accept `strict` (structured tool inputs); dropping it silently
           // relaxed schema enforcement the client asked for (9router#4172).
           ...(toolData.strict === true ? { strict: true } : {}),

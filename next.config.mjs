@@ -266,6 +266,14 @@ const nextConfig = {
       // tiktoken is server-externalized below so Node selects its CommonJS entry.
       // That entry reads the tokenizer WASM beside itself at runtime.
       "./node_modules/tiktoken/tiktoken_bg.wasm",
+      // These packages are reached via dynamic import() (optional/soft deps) so
+      // Next's file tracing copies only their package.json, not their built code,
+      // which crashes the standalone MCP/server at runtime with ERR_MODULE_NOT_FOUND.
+      // Force-include the full package so the standalone bundle can load them.
+      "./node_modules/ioredis/**/*",
+      "./node_modules/undici/**/*",
+      "./node_modules/lru-cache/**/*",
+      "./node_modules/@atjsh/llmlingua-2/**/*",
     ],
   },
   outputFileTracingExcludes: {

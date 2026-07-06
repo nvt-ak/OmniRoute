@@ -104,6 +104,54 @@ describe("normalizeClaudeToolInputSchema", () => {
     assert.equal("required" in result, false);
   });
 
+  it("promotes only the requirements every anyOf/oneOf branch shares", () => {
+    // `tenant` is demanded whichever branch matches, so it stays mandatory;
+    // `byId` / `byName` are branch-specific and must not be promoted.
+    const result = normalizeClaudeToolInputSchema({
+      type: "object",
+      properties: {
+        tenant: { type: "string" },
+        byId: { type: "string" },
+        byName: { type: "string" },
+      },
+      anyOf: [
+        { type: "object", required: ["tenant", "byId"] },
+        { type: "object", required: ["tenant", "byName"] },
+      ],
+    }) as AnyRecord;
+
+    assertNoRootUnion(result, "shared anyOf requirements");
+    assert.deepEqual(result.required, ["tenant"]);
+  });
+
+  it("intersects each disjunctive keyword independently", () => {
+    // Sibling unions are separate constraints: both must hold, so their
+    // per-keyword intersections are unioned rather than intersected together.
+    const result = normalizeClaudeToolInputSchema({
+      type: "object",
+      properties: { a: { type: "string" }, b: { type: "string" } },
+      anyOf: [{ type: "object", required: ["a"] }, { type: "object", required: ["a"] }],
+      oneOf: [{ type: "object", required: ["b"] }, { type: "object", required: ["b"] }],
+    }) as AnyRecord;
+
+    assertNoRootUnion(result, "sibling unions");
+    assert.deepEqual((result.required as string[]).sort(), ["a", "b"]);
+  });
+
+  it("ignores requirements of branches that cannot be objects", () => {
+    // A `type: "null"` branch carries no object requirements; intersecting it
+    // would wrongly erase the requirement the real branch demands.
+    const result = normalizeClaudeToolInputSchema({
+      anyOf: [
+        { type: "null" },
+        { type: "object", properties: { cloudId: { type: "string" } }, required: ["cloudId"] },
+      ],
+    }) as AnyRecord;
+
+    assertNoRootUnion(result, "nullable anyOf");
+    assert.deepEqual(result.required, ["cloudId"]);
+  });
+
   it("merges properties and requirements of a root allOf", () => {
     // Every allOf branch applies at once, so its requirements are cumulative.
     const result = normalizeClaudeToolInputSchema({
