@@ -20,7 +20,7 @@ const PROVIDER_COLUMNS: Record<string, string[]> = {
     "gpt_5_3_codex_spark_weekly",
     "banked_reset_credits",
   ],
-  claude: ["session", "weekly"],
+  claude: ["session", "weekly", "weekly fable (7d)"],
   glm: ["session", "weekly", "mcp_monthly", "banked_reset_credits"],
   "glm-cn": ["session", "weekly", "mcp_monthly", "banked_reset_credits"],
   glmt: ["session", "weekly", "mcp_monthly", "banked_reset_credits"],

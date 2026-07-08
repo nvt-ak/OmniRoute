@@ -143,6 +143,7 @@ test("remaining percentage helpers reflect remaining quota and stale resets refi
 
   const past = new Date(Date.now() - 60_000).toISOString();
   const parsed = providerLimitUtils.parseQuotaData("codex", {
+    fetchedAt: new Date().toISOString(),
     quotas: {
       session: { used: 83, total: 100, resetAt: past },
     },
@@ -337,6 +338,7 @@ test("MiniMax quota payloads use generic provider parsing and stale resets still
   const past = new Date(Date.now() - 5 * 60_000).toISOString();
 
   const parsed = providerLimitUtils.parseQuotaData("minimax", {
+    fetchedAt: new Date().toISOString(),
     quotas: {
       "session (5h)": {
         used: 400,
