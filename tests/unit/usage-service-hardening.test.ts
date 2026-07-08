@@ -574,6 +574,69 @@ test("usage service covers Claude OAuth success, legacy fallback and permissions
   assert.match(permissionsMessage.message, /admin permissions/i);
 });
 
+test("usage service parses Claude new limits[] format including scoped Fable weekly bucket", async () => {
+  const resetSoon = new Date(Date.now() + 60_000).toISOString();
+  const resetWeek = new Date(Date.now() + 120_000).toISOString();
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/api/oauth/usage")) {
+      // Mirrors a real Max-20x payload: legacy seven_day_* buckets are null,
+      // and weekly_all + weekly_scoped arrive with is_active:false yet still
+      // carry a real percent (Claude's UI renders them regardless).
+      return new Response(
+        JSON.stringify({
+          tier: "Claude Max",
+          five_hour: null,
+          seven_day: null,
+          seven_day_sonnet: null,
+          limits: [
+            {
+              kind: "session",
+              percent: 54,
+              resets_at: resetSoon,
+              scope: null,
+              is_active: true,
+            },
+            {
+              kind: "weekly_all",
+              percent: 20,
+              resets_at: resetWeek,
+              scope: null,
+              is_active: false,
+            },
+            {
+              kind: "weekly_scoped",
+              percent: 28,
+              resets_at: resetWeek,
+              scope: { model: { id: null, display_name: "Fable" } },
+              is_active: false,
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+
+  const usage = (await usageService.getUsageForProvider({
+    provider: "claude",
+    accessToken: "claude-limits",
+  })) as {
+    plan?: string;
+    quotas: Record<string, { used: number; remaining: number }>;
+    modelQuotas: Record<string, { used: number; remaining: number }>;
+  };
+  assert.equal(usage.plan, "Claude Max");
+  assert.equal(usage.quotas["session (5h)"].used, 54);
+  assert.equal(usage.quotas["session (5h)"].remaining, 46);
+  assert.equal(usage.quotas["weekly (7d)"].used, 20);
+  assert.equal(usage.quotas["weekly (7d)"].remaining, 80);
+  // Per-model Fable stays display-only in modelQuotas and never enters routing quotas.
+  assert.equal(usage.quotas["weekly fable (7d)"], undefined);
+  assert.equal(usage.modelQuotas["weekly fable (7d)"].used, 28);
+  assert.equal(usage.modelQuotas["weekly fable (7d)"].remaining, 72);
+});
+
 test("usage service covers Claude default-plan fallback, legacy org denial and fetch failures", async () => {
   globalThis.fetch = async (url) => {
     if (String(url).includes("/api/oauth/usage")) {

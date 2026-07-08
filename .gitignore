@@ -304,3 +304,4 @@ docker-compose.yml.bak
 
 # Scoped tsc incremental state written by the typecheck gates (typecheck:core / open-sse / api)
 .tsbuildinfo-*
+.omo/

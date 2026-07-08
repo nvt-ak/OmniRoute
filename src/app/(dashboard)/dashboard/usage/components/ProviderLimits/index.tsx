@@ -463,9 +463,12 @@ export default function ProviderLimits({
             stale: data._stale ? { since: data._staleSince, reason: data._staleReason } : null,
           },
         }));
+        // Trust server fetchedAt, not client "now": on a rate-limited/failed fetch the
+        // API returns stale cached data with its old fetchedAt (+_stale) and skips the
+        // DB write, so stamping now() would show a fresh time the reload can't reproduce.
         setLastRefreshedAt((prev) => ({
           ...prev,
-          [connectionId]: new Date().toISOString(),
+          [connectionId]: data.fetchedAt || new Date().toISOString(),
         }));
       } catch (error: any) {
         setErrors((prev) => ({

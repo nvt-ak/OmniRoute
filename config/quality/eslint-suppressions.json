@@ -4346,11 +4346,6 @@
       "count": 9
     }
   },
-  "tests/unit/schema-coercion.test.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 12
-    }
-  },
   "tests/unit/search-blocked-providers.test.ts": {
     "@typescript-eslint/no-unused-vars": {
       "count": 1
