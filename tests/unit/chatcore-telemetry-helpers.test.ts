@@ -15,6 +15,7 @@ const core = await import("../../src/lib/db/core.ts");
 
 const originalFetch = globalThis.fetch;
 const originalLiveWsPort = process.env.LIVE_WS_PORT;
+const originalExtraUsageLiveSync = process.env.CLAUDE_EXTRA_USAGE_LIVE_SYNC_ENABLED;
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch;
@@ -22,6 +23,11 @@ test.afterEach(() => {
     delete process.env.LIVE_WS_PORT;
   } else {
     process.env.LIVE_WS_PORT = originalLiveWsPort;
+  }
+  if (originalExtraUsageLiveSync === undefined) {
+    delete process.env.CLAUDE_EXTRA_USAGE_LIVE_SYNC_ENABLED;
+  } else {
+    process.env.CLAUDE_EXTRA_USAGE_LIVE_SYNC_ENABLED = originalExtraUsageLiveSync;
   }
 });
 
@@ -125,6 +131,7 @@ test("maybeSyncClaudeExtraUsageState returns early for non-claude provider (bloc
 });
 
 test("maybeSyncClaudeExtraUsageState returns early for claude with blockExtraUsage:false", async () => {
+  process.env.CLAUDE_EXTRA_USAGE_LIVE_SYNC_ENABLED = "true";
   let fetchCalled = false;
   globalThis.fetch = (async () => {
     fetchCalled = true;
@@ -141,11 +148,36 @@ test("maybeSyncClaudeExtraUsageState returns early for claude with blockExtraUsa
   assert.equal(fetchCalled, false, "explicit blockExtraUsage:false disables the block");
 });
 
-test("maybeSyncClaudeExtraUsageState enters the try for claude+enabled, swallows the error, and logs via log.debug", async () => {
-  // provider=claude, providerSpecificData={} (blockExtraUsage !== false), connectionId set
-  // -> passes the guard -> calls the REAL fetchLiveProviderLimits("bogus-conn") which
-  // looks the connection up in the (empty) DB, finds nothing, throws "Connection not found",
-  // and the function's internal try/catch swallows it while logging to log.debug.
+// #6xxx — Default OFF: live post-stream sync of the OAuth-usage plan window
+// compounds with the per-token 429 cooldown into a self-sustaining 429 loop
+// against Anthropic's rate-limited (non-official) usage endpoint. Opt-in via
+// CLAUDE_EXTRA_USAGE_LIVE_SYNC_ENABLED — see telemetryHelpers.ts.
+test("maybeSyncClaudeExtraUsageState returns early by default (CLAUDE_EXTRA_USAGE_LIVE_SYNC_ENABLED unset)", async () => {
+  delete process.env.CLAUDE_EXTRA_USAGE_LIVE_SYNC_ENABLED;
+  let fetchCalled = false;
+  globalThis.fetch = (async () => {
+    fetchCalled = true;
+    return new Response("", { status: 200 });
+  }) as typeof fetch;
+
+  await maybeSyncClaudeExtraUsageState({
+    provider: "claude",
+    connectionId: "some-conn",
+    providerSpecificData: {},
+    log: null,
+  });
+
+  assert.equal(fetchCalled, false, "live post-stream sync is opt-in and off by default");
+});
+
+test("maybeSyncClaudeExtraUsageState enters the try for claude+enabled+opt-in, swallows the error, and logs via log.debug", async () => {
+  // CLAUDE_EXTRA_USAGE_LIVE_SYNC_ENABLED=true, provider=claude,
+  // providerSpecificData={} (blockExtraUsage !== false), connectionId set
+  // -> passes both guards -> calls the REAL fetchLiveProviderLimits("bogus-conn")
+  // which looks the connection up in the (empty) DB, finds nothing, throws
+  // "Connection not found", and the function's internal try/catch swallows it
+  // while logging to log.debug.
+  process.env.CLAUDE_EXTRA_USAGE_LIVE_SYNC_ENABLED = "true";
   const calls: unknown[][] = [];
   const log = {
     debug: (...args: unknown[]) => {

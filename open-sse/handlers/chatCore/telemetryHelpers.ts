@@ -54,6 +54,21 @@ export async function forwardDashboardEventToLiveWs(
   }
 }
 
+// Post-stream live sync of Claude's OAuth-usage plan window, gated behind an
+// opt-in env var (default OFF). `/api/oauth/usage` is a non-official,
+// aggressively rate-limited endpoint (Anthropic 429s it under sustained load);
+// calling it live after EVERY successful Claude stream/response compounds with
+// the per-token 429 cooldown (claudeUsageCooldown.ts) into a self-sustaining
+// 429 loop — the cooldown expires, the very next chat re-triggers this sync,
+// 429s again, and repeats indefinitely (never converges to a quiet steady
+// state). The background provider-limits sync (providerLimits.ts, ~5-7min
+// cadence) plus manual dashboard refresh already keep the extra-usage block
+// state fresh enough for its purpose (surfacing a stale-but-recent block
+// signal), so live post-stream sync is opt-in rather than always-on.
+function isClaudeExtraUsagePostStreamSyncEnabled(): boolean {
+  return process.env.CLAUDE_EXTRA_USAGE_LIVE_SYNC_ENABLED === "true";
+}
+
 export async function maybeSyncClaudeExtraUsageState({
   provider,
   connectionId,
@@ -65,7 +80,11 @@ export async function maybeSyncClaudeExtraUsageState({
   providerSpecificData: unknown;
   log?: { debug?: (...args: unknown[]) => void; warn?: (...args: unknown[]) => void } | null;
 }) {
-  if (!connectionId || !isClaudeExtraUsageBlockEnabled(provider, providerSpecificData)) {
+  if (
+    !connectionId ||
+    !isClaudeExtraUsagePostStreamSyncEnabled() ||
+    !isClaudeExtraUsageBlockEnabled(provider, providerSpecificData)
+  ) {
     return;
   }
 
