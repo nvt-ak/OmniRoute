@@ -1323,6 +1323,7 @@ export async function syncAllProviderLimits(
 
   if (source === "scheduled") {
     await setLastProviderLimitsAutoSyncTime(new Date().toISOString());
+    emitScheduledUsageReport(connections, caches);
   }
 
   return {
@@ -1332,4 +1333,132 @@ export async function syncAllProviderLimits(
     caches,
     errors,
   };
+}
+
+export interface UsageReportWindow {
+  name: string;
+  displayName: string | null;
+  remainingPct: number | null;
+  used: number | null;
+  total: number | null;
+  resetAt: string | null;
+  unlimited: boolean;
+}
+
+export interface UsageReportAccountSummary {
+  provider: string;
+  account: string | null;
+  worstRemainingPct: number | null;
+  windows: UsageReportWindow[];
+}
+
+// Extract EVERY quota window of a cache entry (not just the worst) so the
+// report mirrors the Provider Quota page. Defensive: quota shapes vary per
+// provider, so each field is read guardedly and skipped when absent.
+function windowsFromCache(entry: ProviderLimitsCacheEntry | undefined): UsageReportWindow[] {
+  const quotas = entry?.quotas;
+  if (!quotas || typeof quotas !== "object") return [];
+  const out: UsageReportWindow[] = [];
+  for (const [windowKey, raw] of Object.entries(quotas as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object") continue;
+    const q = raw as {
+      displayName?: unknown;
+      remainingPercentage?: unknown;
+      remaining?: unknown;
+      used?: unknown;
+      total?: unknown;
+      unlimited?: unknown;
+      resetAt?: unknown;
+      message?: unknown;
+    };
+    if (windowKey === "error" || typeof q.message === "string") continue;
+    const pctRaw = q.remainingPercentage ?? q.remaining;
+    out.push({
+      name: windowKey,
+      displayName: typeof q.displayName === "string" ? q.displayName : null,
+      remainingPct: typeof pctRaw === "number" && Number.isFinite(pctRaw) ? pctRaw : null,
+      used: typeof q.used === "number" && Number.isFinite(q.used) ? q.used : null,
+      total: typeof q.total === "number" && Number.isFinite(q.total) ? q.total : null,
+      resetAt: typeof q.resetAt === "string" ? q.resetAt : null,
+      unlimited: q.unlimited === true,
+    });
+  }
+  // Tightest window first so the reader sees the most-depleted quota on top.
+  out.sort((a, b) => (a.remainingPct ?? Infinity) - (b.remainingPct ?? Infinity));
+  return out;
+}
+
+export interface UsageReportData {
+  intervalMinutes: number;
+  accountCount: number;
+  accounts: UsageReportAccountSummary[];
+}
+
+function buildUsageReportData(
+  connections: ProviderConnectionLike[],
+  caches: Record<string, ProviderLimitsCacheEntry>
+): UsageReportData {
+  const accounts: UsageReportAccountSummary[] = [];
+  for (const conn of connections) {
+    const windows = windowsFromCache(caches[conn.id]);
+    if (windows.length === 0) continue;
+    const worst = windows.reduce<number | null>((min, w) => {
+      if (w.unlimited || w.remainingPct === null) return min;
+      return min === null || w.remainingPct < min ? w.remainingPct : min;
+    }, null);
+    const email = (conn as { email?: string | null }).email ?? null;
+    accounts.push({
+      provider: conn.provider,
+      account: typeof email === "string" && email.trim() ? email : null,
+      worstRemainingPct: worst,
+      windows,
+    });
+  }
+  // Accounts with the tightest quota float to the top of the report.
+  accounts.sort((a, b) => (a.worstRemainingPct ?? Infinity) - (b.worstRemainingPct ?? Infinity));
+  return {
+    intervalMinutes: getProviderLimitsSyncIntervalMinutes(),
+    accountCount: accounts.length,
+    accounts,
+  };
+}
+
+function emitScheduledUsageReport(
+  connections: ProviderConnectionLike[],
+  caches: Record<string, ProviderLimitsCacheEntry>
+): void {
+  try {
+    const report = buildUsageReportData(connections, caches);
+    if (report.accountCount === 0) return;
+
+    import("@/lib/webhookDispatcher")
+      .then(({ notifyWebhookEvent }) => {
+        notifyWebhookEvent("usage.report", report as unknown as Record<string, unknown>);
+      })
+      .catch(() => {
+        /* report webhook is best-effort */
+      });
+  } catch {
+    /* never let reporting break the sync */
+  }
+}
+
+// Build a usage.report payload from the LATEST cached quota (in-memory cache,
+// falling back to the freshest quota_snapshots row) — NEVER triggers an
+// upstream fetch. Covers every active, usage-supported connection (OAuth and
+// API-key) that has cached quota. Returns null when nothing has quota yet.
+export async function buildUsageReportFromCache(): Promise<UsageReportData | null> {
+  const connections = (
+    (await getProviderConnections({ isActive: true })) as unknown as ProviderConnectionLike[]
+  ).filter(isSupportedUsageConnection);
+  if (connections.length === 0) return null;
+
+  const liveCaches = getCachedProviderLimitsMap();
+  const caches: Record<string, ProviderLimitsCacheEntry> = {};
+  for (const conn of connections) {
+    const cached = liveCaches[conn.id] ?? snapshotCacheEntry(conn.id, null) ?? undefined;
+    if (cached) caches[conn.id] = cached;
+  }
+  const report = buildUsageReportData(connections, caches);
+  return report.accountCount === 0 ? null : report;
 }

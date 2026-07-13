@@ -47,7 +47,9 @@ interface WebhookCardProps {
   webhook: WebhookItem;
   t: (key: string, opts?: Record<string, unknown>) => string;
   testingId: string | null;
+  sendingUsageId?: string | null;
   onTest: (wh: WebhookItem) => void;
+  onSendUsage?: (wh: WebhookItem) => void;
   onToggleEnabled: (wh: WebhookItem) => void;
   onEdit: (wh: WebhookItem) => void;
   onDelete: (wh: WebhookItem) => void;
@@ -57,7 +59,9 @@ export function WebhookCard({
   webhook,
   t,
   testingId,
+  sendingUsageId,
   onTest,
+  onSendUsage,
   onToggleEnabled,
   onEdit,
   onDelete,
@@ -65,6 +69,7 @@ export function WebhookCard({
   const [expanded, setExpanded] = useState(false);
   const status = getStatus(webhook);
   const isTesting = testingId === webhook.id;
+  const isSendingUsage = sendingUsageId === webhook.id;
 
   return (
     <div className="rounded-xl border border-border bg-surface">
@@ -101,6 +106,22 @@ export function WebhookCard({
               className={isTesting ? "animate-spin" : undefined}
             />
           </Button>
+          {onSendUsage && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => onSendUsage(webhook)}
+              disabled={isSendingUsage}
+              title={t("sendUsage")}
+              aria-label={t("sendUsage")}
+            >
+              <Icon
+                name={isSendingUsage ? "sync" : "monitoring"}
+                size={18}
+                className={isSendingUsage ? "animate-spin" : undefined}
+              />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import type { QuotaWarnInfo } from "../../open-sse/services/quotaPreflight.ts";
 
 const quotaPreflight = await import("../../open-sse/services/quotaPreflight.ts");
 
@@ -347,6 +348,8 @@ test("registerQuotaWindows / getQuotaWindows round-trips", () => {
   assert.deepEqual([...getQuotaWindows("provider-with-no-registration-anywhere")], []);
 });
 
+// ─── _freetrial window fallback (base exhausted → trial window covers it) ───
+
 test("evaluateQuotaCutoff permits connection when base is exhausted but _freetrial is available", () => {
   const quota = {
     used: 50,
@@ -374,4 +377,72 @@ test("evaluateQuotaCutoff blocks connection when both base and _freetrial are ex
   const result = evaluateQuotaCutoff(quota);
   assert.equal(result.proceed, false);
   assert.equal(result.reason, "quota_exhausted");
+});
+
+// ─── onWarn callback (feeds the approaching-cutoff webhook) ───────────────
+
+test("preflightQuota (legacy single-signal): onWarn fires with usage details", async () => {
+  const warnPayloads: QuotaWarnInfo[] = [];
+  registerQuotaFetcher("provider-warn-cb", async () => ({
+    used: 80,
+    total: 100,
+    percentUsed: 0.8,
+    resetAt: "2026-06-01T00:00:00Z",
+  }));
+
+  await withPatchedConsole(
+    "warn",
+    () => {},
+    async () =>
+      preflightQuota(
+        "provider-warn-cb",
+        "conn-warn-cb-1",
+        createConnection({ quotaPreflightEnabled: true }),
+        { resolveWarnRemainingPercent: () => 20 },
+        (info) => warnPayloads.push(info)
+      )
+  );
+
+  assert.equal(warnPayloads.length, 1);
+  const { remainingPercent, ...rest } = warnPayloads[0];
+  assert.ok(Math.abs(remainingPercent - 20) < 1e-9);
+  assert.deepEqual(rest, {
+    window: null,
+    used: 80,
+    total: 100,
+    resetAt: "2026-06-01T00:00:00Z",
+  });
+});
+
+test("preflightQuota (per-window): onWarn fires per warning window, not on block", async () => {
+  const warnPayloads: QuotaWarnInfo[] = [];
+  registerQuotaFetcher("provider-warn-cb-win", async () => ({
+    used: 82,
+    total: 100,
+    percentUsed: 0.82,
+    windows: {
+      session: { percentUsed: 0.82, resetAt: "2026-06-10T00:00:00Z" },
+    },
+  }));
+
+  await withPatchedConsole(
+    "warn",
+    () => {},
+    async () =>
+      preflightQuota(
+        "provider-warn-cb-win",
+        "conn-warn-cb-2",
+        createConnection({ quotaPreflightEnabled: true }),
+        {
+          resolveMinRemainingPercent: () => 5,
+          resolveWarnRemainingPercent: () => 20,
+        },
+        (info) => warnPayloads.push(info)
+      )
+  );
+
+  assert.equal(warnPayloads.length, 1);
+  assert.equal(warnPayloads[0].window, "session");
+  assert.equal(warnPayloads[0].resetAt, "2026-06-10T00:00:00Z");
+  assert.ok(Math.abs(warnPayloads[0].remainingPercent - 18) < 1e-9);
 });
