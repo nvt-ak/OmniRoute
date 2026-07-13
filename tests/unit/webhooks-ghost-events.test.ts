@@ -7,24 +7,28 @@ import {
 } from "../../src/lib/webhooks/eventDescriptions.ts";
 
 describe("webhook catalogue", () => {
-  it("no longer declares provider.error/recovered/combo.switched", () => {
+  it("does not declare the provider.error/provider.recovered ghost events (no emitter)", () => {
     const keys = Object.keys(EVENT_DESCRIPTIONS);
     assert.equal(keys.includes("provider.error"), false);
     assert.equal(keys.includes("provider.recovered"), false);
-    assert.equal(keys.includes("combo.switched"), false);
-    assert.equal(keys.length, 6); // completed, failed, quota.exceeded, test.ping, proxy.set_aside, proxy.pool.exhausted
+    // completed, failed, quota.exceeded, proxy.set_aside, proxy.pool.exhausted,
+    // usage.report, combo.switched, test.ping
+    assert.equal(keys.length, 8);
     assert.equal(keys.includes("proxy.set_aside"), true);
     assert.equal(keys.includes("proxy.pool.exhausted"), true);
+    assert.equal(keys.includes("usage.report"), true);
+    assert.equal(keys.includes("combo.switched"), true);
   });
 
-  it("rejected legacy events via zod (400)", () => {
+  it("rejects the ghost events via zod but accepts the live catalogue", () => {
     const schema = z.enum(WEBHOOK_EVENT_VALUES as unknown as [string, ...string[]]);
     assert.equal(schema.safeParse("provider.error").success, false);
     assert.equal(schema.safeParse("provider.recovered").success, false);
-    assert.equal(schema.safeParse("combo.switched").success, false);
     assert.equal(schema.safeParse("request.completed").success, true);
     assert.equal(schema.safeParse("request.failed").success, true);
     assert.equal(schema.safeParse("quota.exceeded").success, true);
+    assert.equal(schema.safeParse("usage.report").success, true);
+    assert.equal(schema.safeParse("combo.switched").success, true);
     assert.equal(schema.safeParse("test.ping").success, true);
     assert.equal(schema.safeParse("proxy.set_aside").success, true);
     assert.equal(schema.safeParse("proxy.pool.exhausted").success, true);

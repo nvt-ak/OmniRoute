@@ -2,6 +2,9 @@ import { hasCodexCreditOptIn } from "@/lib/providers/quotaCutoffOptIns";
 import { isQuotaPreflightEnabled } from "@omniroute/open-sse/services/quotaPreflight.ts";
 import { toCodexBaseQuotaWindowName } from "@omniroute/open-sse/config/codexQuotaScopes.ts";
 
+/** Global default at/below this remaining % is the factory no-op (cutoff not restrictive). */
+export const FACTORY_NO_OP_REMAINING_PERCENT = 2;
+
 export interface QuotaPreflightPolicy {
   enabled: boolean;
   defaultThresholdPercent: number;
@@ -29,7 +32,7 @@ export function shouldApplyQuotaCutoff(
     isQuotaPreflightEnabled(connection as Record<string, unknown>) ||
     creditOptIn ||
     policy.enabled === true ||
-    policy.defaultThresholdPercent > 2
+    policy.defaultThresholdPercent > FACTORY_NO_OP_REMAINING_PERCENT
   );
 }
 
@@ -80,7 +83,7 @@ export function isConfiguredCutoff(
   }
   return (
     policy.enabled === true ||
-    policy.defaultThresholdPercent > 2 ||
+    policy.defaultThresholdPercent > FACTORY_NO_OP_REMAINING_PERCENT ||
     isQuotaPreflightEnabled(connection as Record<string, unknown>)
   );
 }

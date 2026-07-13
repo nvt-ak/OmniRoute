@@ -43,6 +43,9 @@ import { resolveCcDiscoveryAliasStrip } from "@/lib/ccDiscoveryAliasResolve";
 import { handleComboChat, shouldSkipConnDisable } from "@omniroute/open-sse/services/combo.ts";
 import type { ComboLike, SingleModelTarget } from "@omniroute/open-sse/services/combo/types.ts";
 import { mergeAbortSignals } from "@omniroute/open-sse/executors/base.ts";
+import { parseModel } from "@omniroute/open-sse/services/model.ts";
+import { notifyWebhookEvent } from "@/lib/webhookDispatcher";
+import { recordFailureForNotify } from "@/lib/webhooks/failureNotificationDedup";
 import { resolveRequestAutoControls } from "@omniroute/open-sse/services/autoCombo/requestControls.ts";
 import { isVerifiedNativeCodexRequest } from "@omniroute/open-sse/config/codexIdentity.ts";
 import { resolveCompressionSettings } from "@omniroute/open-sse/handlers/chatCore/compressionSettings.ts";
@@ -1436,6 +1439,28 @@ async function handleChatImplementation(
     false
   );
   recordTelemetry(telemetry);
+  // Non-combo request.failed webhook. This is the single non-combo choke point
+  // (the combo branch returns above at the combo dispatch), so there is no
+  // double-fire with combo.ts's own webhook. Fires only on a genuine upstream
+  // failure (>=400, excluding client-abort 499); mid-stream drops that start
+  // 200 are out of scope, matching the combo path. Deduped + best-effort.
+  try {
+    if (!response.ok && response.status !== 499) {
+      const parsed = parseModel(resolvedModelStr);
+      const provider = parsed.provider || parsed.providerAlias || "unknown";
+      const { shouldNotify, count } = recordFailureForNotify("(single)", provider, response.status);
+      if (shouldNotify) {
+        notifyWebhookEvent("request.failed", {
+          provider,
+          model: resolvedModelStr,
+          status: response.status,
+          failureCount: count,
+        });
+      }
+    }
+  } catch {
+    /* webhook is best-effort */
+  }
   return withModalityBridgeHeader(
     withConversationId(
       withCorrelationId(withSessionHeader(response, sessionId), reqId),
