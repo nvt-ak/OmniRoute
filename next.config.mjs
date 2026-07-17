@@ -815,6 +815,17 @@ const nextConfig = {
   },
 };
 
-const withMDX = createMDX();
+// OMNIROUTE_SKIP_DOCS=1 excludes the in-app fumadocs `/docs` site from the build.
+// When set, we must NOT call/apply `createMDX()`: invoking it eagerly runs the MDX
+// source generation (scanning the 1,187 docs markdown files) and applying the wrap
+// registers the MDX webpack/turbopack loaders that compile them — the main build-time
+// memory/CPU cost. Skipping both means the docs markdown is never scanned or compiled.
+// The `/docs` route group (its only consumer via `@/lib/source` → `.source/server`) is
+// physically moved out of the build by `scripts/build/skipDocsPages.mjs`, wired into
+// `build-next-isolated.mjs`, so nothing imports the (now un-generated) `.source/server`.
+// Default (flag unset) behavior is unchanged: `createMDX()` runs and wraps as before.
+const skipDocs = process.env.OMNIROUTE_SKIP_DOCS === "1";
 
-export default withMDX(withNextIntl(nextConfig));
+export default skipDocs
+  ? withNextIntl(nextConfig)
+  : createMDX()(withNextIntl(nextConfig));
