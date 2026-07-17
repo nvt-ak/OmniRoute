@@ -1,0 +1,76 @@
+name: Build npm artifact (fork)
+
+# Build npm tarball (.tgz) từ nhánh fork trên Linux x64 (native binary đúng
+# platform), rồi gắn vào một GitHub Release có tag cố định `build-latest`.
+# → Server wget link PUBLIC (repo public, không cần token):
+#     https://github.com/phonex34/OmniRoute/releases/download/build-latest/omniroute.tgz
+#
+# Trigger: MANUAL ONLY. Actions tab → Run workflow → chọn ref (mặc định fix/cache).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch/tag/commit để build"
+        required: false
+        default: "fix/cache"
+      clean:
+        description: "Clean build — bỏ Next cache (bật khi nghi cache lỗi)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build tarball (linux/amd64, Node 24)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund --legacy-peer-deps --prefer-offline
+
+      - name: Cache Next build
+        if: ${{ github.event.inputs.clean != 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: .build/next/cache
+          key: next-${{ hashFiles('package-lock.json') }}-${{ github.event.inputs.ref }}
+          restore-keys: next-
+
+      - name: Build + pack
+        env:
+          OMNIROUTE_SKIP_DOCS: "1"
+          OMNIROUTE_USE_TURBOPACK: "0"
+          OMNIROUTE_MITM_STUB: "1"
+          NODE_OPTIONS: "--max-old-space-size=4096"
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.clean }}" = "true" ]; then
+            echo "Clean build — xóa .build trước khi build"
+            rm -rf .build
+          fi
+          npm run build:release
+          FILE=$(npm pack --silent)
+          mv "$FILE" omniroute.tgz
+          echo "Packed omniroute.tgz ($(du -h omniroute.tgz | cut -f1)) from $FILE"
+
+      - name: Publish to Release (tag build-latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-latest
+          name: "OmniRoute fork build (latest)"
+          body: "Built from `${{ github.event.inputs.ref }}` at ${{ github.sha }}"
+          files: omniroute.tgz
+          make_latest: "true"
