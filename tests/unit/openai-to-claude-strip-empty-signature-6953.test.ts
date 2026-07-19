@@ -152,6 +152,43 @@ test("#6953: redacted_thinking with empty data is stripped", () => {
   assert.equal(redactedBlocks.length, 0, "redacted_thinking with empty data must be stripped");
 });
 
+test("#6953: redacted_thinking with data is preserved without a synthetic signature", () => {
+  const opaqueData = "opaque-native-claude-redaction";
+  const result = openaiToClaudeRequest(
+    "claude-opus-4-8",
+    {
+      messages: [
+        { role: "user", content: "hello" },
+        {
+          role: "assistant",
+          content: [
+            { type: "redacted_thinking", data: opaqueData },
+            { type: "text", text: "response" },
+          ],
+        },
+        { role: "user", content: "ok" },
+      ],
+    },
+    false
+  );
+
+  const assistant = result.messages.find((m) => m.role === "assistant");
+  assert.ok(assistant);
+
+  const redactedBlocks = assistant.content.filter((b) => b && b.type === "redacted_thinking");
+  assert.equal(redactedBlocks.length, 1, "valid redacted_thinking block must be preserved");
+  assert.equal(
+    redactedBlocks[0].data,
+    opaqueData,
+    "opaque redacted data must be preserved verbatim"
+  );
+  assert.equal(
+    "signature" in redactedBlocks[0],
+    false,
+    "redacted_thinking block must not receive a synthetic signature"
+  );
+});
+
 test("#6953: combo scenario — codex-sourced thinking block does not block Anthropic leg", () => {
   // Simulates a combo route: turn 1 served by codex produced a thinking block
   // with signature:"". Turn 2 should be able to route to Anthropic without

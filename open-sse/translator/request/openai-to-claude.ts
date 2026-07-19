@@ -763,10 +763,14 @@ function getContentBlocksFromMessage(
           if (part.type === "redacted_thinking" && part.data === "") {
             continue; // drop — same: empty data from non-Anthropic provider
           }
-          blocks.push({
-            ...part,
-            signature: part.signature || DEFAULT_THINKING_CLAUDE_SIGNATURE,
-          });
+          blocks.push(
+            part.type === "redacted_thinking"
+              ? { ...part }
+              : {
+                  ...part,
+                  signature: part.signature || DEFAULT_THINKING_CLAUDE_SIGNATURE,
+                }
+          );
         } else if (part.type === "tool_use") {
           // Tool name already has prefix from tool declarations, keep as-is
           // CRITICAL: Skip tool_use blocks with empty name (causes Claude 400 error)
