@@ -148,6 +148,78 @@ test("claude-to-openai: finish-flush emits </think> when suppressThinkClose=fals
   assert.ok(contents.includes("</think>"), "marker must be emitted at finish when opted in");
 });
 
+test("claude-to-openai: Chat exposes visible thinking but suppresses opaque Claude blocks", () => {
+  const state = newState();
+  const chunks: unknown[] = [];
+  const push = (result: unknown) => {
+    if (Array.isArray(result)) chunks.push(...result);
+    else if (result) chunks.push(result);
+  };
+
+  // Given a native Claude stream containing visible thinking, a signature, and
+  // redacted thinking, translate every event to OpenAI Chat chunks.
+  push(claudeToOpenAIResponse({ type: "message_start", message: { id: "m1" } }, state));
+  push(
+    claudeToOpenAIResponse(
+      { type: "content_block_start", index: 0, content_block: { type: "thinking" } },
+      state
+    )
+  );
+  push(
+    claudeToOpenAIResponse(
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "visible reasoning" },
+      },
+      state
+    )
+  );
+  push(
+    claudeToOpenAIResponse(
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "signature_delta", signature: "opaque-signature" },
+      },
+      state
+    )
+  );
+  push(claudeToOpenAIResponse({ type: "content_block_stop", index: 0 }, state));
+  push(
+    claudeToOpenAIResponse(
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "redacted_thinking", data: "opaque-redacted" },
+      },
+      state
+    )
+  );
+  push(claudeToOpenAIResponse({ type: "content_block_stop", index: 1 }, state));
+  push(
+    claudeToOpenAIResponse({ type: "message_delta", delta: { stop_reason: "end_turn" } }, state)
+  );
+
+  const serializedChunks = chunks.map((chunk) => JSON.stringify(chunk)).join("\\n");
+  assert.equal(serializedChunks.includes("opaque-signature"), false);
+  assert.equal(serializedChunks.includes("opaque-redacted"), false);
+
+  const deltas = chunks.map(
+    (chunk) =>
+      (chunk as { choices?: Array<{ delta?: { content?: unknown; reasoning_content?: unknown } }> })
+        ?.choices?.[0]?.delta
+  );
+  const visibleFields = deltas.flatMap((delta) => [delta?.content, delta?.reasoning_content]);
+  assert.equal(visibleFields.includes("opaque-signature"), false);
+  assert.equal(visibleFields.includes("opaque-redacted"), false);
+
+  const reasoning = deltas
+    .map((delta) => delta?.reasoning_content)
+    .filter((value): value is string => typeof value === "string");
+  assert.deepEqual(reasoning, ["", "visible reasoning"]);
+});
+
 // ── header signal resolution (x-omniroute-thinking-marker — #5312) ───────────
 
 test("thinkingMarkerHeaderSignal: off → suppress, on → keep, absent/unknown → null", () => {

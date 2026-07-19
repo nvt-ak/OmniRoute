@@ -419,7 +419,7 @@ function buildDenseOutput(state) {
 }
 
 // Helper functions
-function startReasoning(state, emit, idx) {
+function startReasoning(state, emit, idx, deferSummary = false) {
   if (!state.reasoningId) {
     state.reasoningId = `rs_${state.responseId}_${idx}`;
     state.reasoningIndex = idx;
@@ -430,19 +430,31 @@ function startReasoning(state, emit, idx) {
       item: { id: state.reasoningId, type: "reasoning", summary: [], status: "in_progress" },
     });
 
-    emit("response.reasoning_summary_part.added", {
-      type: "response.reasoning_summary_part.added",
-      item_id: state.reasoningId,
-      output_index: idx,
-      summary_index: 0,
-      part: { type: "summary_text", text: "" },
-    });
-    state.reasoningPartAdded = true;
+    if (!deferSummary) {
+      emit("response.reasoning_summary_part.added", {
+        type: "response.reasoning_summary_part.added",
+        item_id: state.reasoningId,
+        output_index: idx,
+        summary_index: 0,
+        part: { type: "summary_text", text: "" },
+      });
+      state.reasoningPartAdded = true;
+    }
   }
 }
 
 function emitReasoningDelta(state, emit, text) {
   if (!text) return;
+  if (!state.reasoningPartAdded) {
+    emit("response.reasoning_summary_part.added", {
+      type: "response.reasoning_summary_part.added",
+      item_id: state.reasoningId,
+      output_index: state.reasoningIndex,
+      summary_index: 0,
+      part: { type: "summary_text", text: "" },
+    });
+    state.reasoningPartAdded = true;
+  }
   state.reasoningBuf += text;
   emit("response.reasoning_summary_text.delta", {
     type: "response.reasoning_summary_text.delta",
@@ -455,30 +467,36 @@ function emitReasoningDelta(state, emit, text) {
 
 function closeReasoning(state, emit) {
   if (state.reasoningId && !state.reasoningDone) {
+    const hasSummary = state.reasoningBuf.length > 0;
     state.reasoningDone = true;
 
-    emit("response.reasoning_summary_text.done", {
-      type: "response.reasoning_summary_text.done",
-      item_id: state.reasoningId,
-      output_index: state.reasoningIndex,
-      summary_index: 0,
-      text: state.reasoningBuf,
-    });
+    if (hasSummary) {
+      emit("response.reasoning_summary_text.done", {
+        type: "response.reasoning_summary_text.done",
+        item_id: state.reasoningId,
+        output_index: state.reasoningIndex,
+        summary_index: 0,
+        text: state.reasoningBuf,
+      });
 
-    emit("response.reasoning_summary_part.done", {
-      type: "response.reasoning_summary_part.done",
-      item_id: state.reasoningId,
-      output_index: state.reasoningIndex,
-      summary_index: 0,
-      part: { type: "summary_text", text: state.reasoningBuf },
-    });
+      emit("response.reasoning_summary_part.done", {
+        type: "response.reasoning_summary_part.done",
+        item_id: state.reasoningId,
+        output_index: state.reasoningIndex,
+        summary_index: 0,
+        part: { type: "summary_text", text: state.reasoningBuf },
+      });
+    }
 
-    const reasoningItem = {
+    const reasoningItem: Record<string, unknown> = {
       id: state.reasoningId,
       type: "reasoning",
-      summary: [{ type: "summary_text", text: state.reasoningBuf }],
+      summary: hasSummary ? [{ type: "summary_text", text: state.reasoningBuf }] : [],
       status: "completed",
     };
+    if (typeof state.reasoningEncryptedContent === "string") {
+      reasoningItem.encrypted_content = state.reasoningEncryptedContent;
+    }
 
     emit("response.output_item.done", {
       type: "response.output_item.done",
@@ -508,6 +526,15 @@ function nextFreeMessageIndex(state, requestedIdx) {
     (state.reasoningId && i === normalizeOutputIndex(state.reasoningIndex));
   while (claimed(candidate)) candidate += 1;
   return candidate;
+}
+
+function resetReasoningState(state) {
+  state.reasoningId = "";
+  state.reasoningIndex = -1;
+  state.reasoningBuf = "";
+  state.reasoningPartAdded = false;
+  state.reasoningDone = false;
+  delete state.reasoningEncryptedContent;
 }
 
 function emitTextContent(state, emit, idx, content) {
@@ -1585,6 +1612,119 @@ function openaiResponsesToOpenAIResponseStream(chunk, state) {
   return null;
 }
 
+export function claudeToOpenAIResponsesResponse(chunk, state) {
+  if (!chunk) return flushEvents(state);
+
+  const { events, emit } = createEventEmitter(state);
+
+  if (chunk.type === "message_start") {
+    state.responseId = `resp_${chunk.message?.id || Date.now()}`;
+    state.model = chunk.message?.model;
+    const usage = chunk.message?.usage;
+    if (usage && typeof usage === "object" && typeof usage.input_tokens === "number") {
+      state.usage = {
+        input_tokens: usage.input_tokens,
+        output_tokens: 0,
+        total_tokens: usage.input_tokens,
+      };
+    }
+    state.started = true;
+    const response = {
+      id: state.responseId,
+      object: "response",
+      created_at: state.created,
+      status: "in_progress",
+      background: false,
+      error: null,
+      output: [],
+      ...(state.model ? { model: state.model } : {}),
+    };
+    emit("response.created", { type: "response.created", response });
+    emit("response.in_progress", { type: "response.in_progress", response });
+    return events;
+  }
+
+  if (chunk.type === "content_block_start") {
+    const block = chunk.content_block;
+    if (block?.type === "thinking" || block?.type === "redacted_thinking") {
+      if (state.reasoningId && !state.reasoningDone) closeReasoning(state, emit);
+      if (state.reasoningDone) resetReasoningState(state);
+      const isRedacted = block.type === "redacted_thinking";
+      if (isRedacted && typeof block.data === "string") {
+        state.reasoningEncryptedContent = block.data;
+      }
+      startReasoning(state, emit, chunk.index, true);
+    } else if (block?.type === "text") {
+      if (state.reasoningId && !state.reasoningDone) closeReasoning(state, emit);
+      state.currentTextIndex = chunk.index;
+    } else if (block?.type === "tool_use") {
+      if (state.reasoningId && !state.reasoningDone) closeReasoning(state, emit);
+      for (const index in state.msgItemAdded) closeMessage(state, emit, index);
+      emitToolCall(state, emit, {
+        index: chunk.index,
+        id: block.id,
+        function: { name: state.toolNameMap?.get(block.name) || block.name, arguments: "" },
+      });
+    }
+    return events;
+  }
+
+  if (chunk.type === "content_block_delta") {
+    const delta = chunk.delta;
+    if (delta?.type === "thinking_delta" && typeof delta.thinking === "string") {
+      startReasoning(state, emit, chunk.index);
+      emitReasoningDelta(state, emit, delta.thinking);
+    } else if (delta?.type === "signature_delta" && typeof delta.signature === "string") {
+      state.reasoningEncryptedContent = delta.signature;
+    } else if (delta?.type === "text_delta" && typeof delta.text === "string") {
+      if (state.reasoningId && !state.reasoningDone) closeReasoning(state, emit);
+      emitTextContent(state, emit, chunk.index, delta.text);
+    } else if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
+      emitToolCall(state, emit, {
+        index: chunk.index,
+        function: { arguments: delta.partial_json },
+      });
+    }
+    return events;
+  }
+
+  if (chunk.type === "content_block_stop") {
+    if (state.reasoningId && !state.reasoningDone && state.reasoningIndex === chunk.index) {
+      closeReasoning(state, emit);
+    }
+    return events;
+  }
+
+  if (chunk.type === "message_delta") {
+    const usage = chunk.usage;
+    if (usage && typeof usage === "object") {
+      const inputTokens =
+        typeof usage.input_tokens === "number"
+          ? usage.input_tokens
+          : (state.usage?.input_tokens ?? 0);
+      const outputTokens =
+        typeof usage.output_tokens === "number"
+          ? usage.output_tokens
+          : (state.usage?.output_tokens ?? 0);
+      state.usage = {
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        total_tokens: inputTokens + outputTokens,
+      };
+    }
+    if (chunk.delta?.stop_reason) {
+      for (const index in state.msgItemAdded) closeMessage(state, emit, index);
+      closeReasoning(state, emit);
+      for (const index in state.funcCallIds) closeToolCall(state, emit, index);
+      sendCompleted(state, emit);
+    }
+    return events;
+  }
+
+  return [];
+}
+
 // Register both directions
 register(FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, null, openaiToOpenAIResponsesResponse);
 register(FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI, null, openaiResponsesToOpenAIResponse);
+register(FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES, null, claudeToOpenAIResponsesResponse);

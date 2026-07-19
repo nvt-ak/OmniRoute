@@ -191,6 +191,10 @@ export function translateNonStreamingResponse(
     return responseBody;
   }
 
+  if (targetFormat === FORMATS.CLAUDE && sourceFormat === FORMATS.OPENAI_RESPONSES) {
+    return convertClaudeNonStreamingToResponses(toRecord(responseBody), toolNameMap);
+  }
+
   let intermediateOpenAI = responseBody;
 
   if (targetFormat === FORMATS.OPENAI) {
@@ -755,6 +759,96 @@ export function translateNonStreamingResponse(
 
   // Return intermediateOpenAI (which is either the raw response if unknown targetFormat, or an OpenAI compatible payload)
   return intermediateOpenAI;
+}
+
+function convertClaudeNonStreamingToResponses(
+  response: JsonRecord,
+  toolNameMap?: Map<string, string> | null
+): JsonRecord {
+  const responseId = `resp_${toString(response.id, String(Date.now()))}`;
+  const content = Array.isArray(response.content) ? response.content : [];
+  const output: JsonRecord[] = [];
+
+  for (let index = 0; index < content.length; index += 1) {
+    const block = toRecord(content[index]);
+    const outputIndex = index;
+
+    if (block.type === "thinking") {
+      const summaryText = toString(block.thinking);
+      const reasoning: JsonRecord = {
+        id: `rs_${responseId}_${outputIndex}`,
+        type: "reasoning",
+        summary: summaryText ? [{ type: "summary_text", text: summaryText }] : [],
+      };
+      const signature = toString(block.signature);
+      if (signature) reasoning.encrypted_content = signature;
+      output.push(reasoning);
+      continue;
+    }
+
+    if (block.type === "redacted_thinking") {
+      const encryptedContent = toString(block.data);
+      const reasoning: JsonRecord = {
+        id: `rs_${responseId}_${outputIndex}`,
+        type: "reasoning",
+        summary: [],
+      };
+      if (encryptedContent) reasoning.encrypted_content = encryptedContent;
+      output.push(reasoning);
+      continue;
+    }
+
+    if (block.type === "text") {
+      output.push({
+        id: `msg_${responseId}_${outputIndex}`,
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: toString(block.text),
+            annotations: [],
+            logprobs: [],
+          },
+        ],
+      });
+      continue;
+    }
+
+    if (block.type === "tool_use") {
+      const callId = toString(block.id, `call_${Date.now()}_${output.length}`);
+      const rawName = toString(block.name);
+      output.push({
+        id: `fc_${callId}`,
+        type: "function_call",
+        call_id: callId,
+        name: toolNameMap?.get(rawName) ?? rawName,
+        arguments: JSON.stringify(block.input ?? {}),
+      });
+    }
+  }
+
+  const usage = toRecord(response.usage);
+  const inputTokens = toNumber(usage.input_tokens, 0);
+  const outputTokens = toNumber(usage.output_tokens, 0);
+  const result: JsonRecord = {
+    id: responseId,
+    object: "response",
+    created_at: toNumber(response.created_at, 0),
+    status: "completed",
+    model: toString(response.model, "claude"),
+    output,
+  };
+
+  if (Object.keys(usage).length > 0) {
+    result.usage = {
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      total_tokens: inputTokens + outputTokens,
+    };
+  }
+
+  return result;
 }
 
 /**
