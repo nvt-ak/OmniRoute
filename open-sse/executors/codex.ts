@@ -3,6 +3,7 @@ import { newestChromeProfile } from "../utils/browserProfiles.ts";
 import { getApiKeyCodexServiceTier } from "../../src/lib/providers/codexApiKeyServiceMode";
 import { buildErrorBody } from "../utils/error.ts";
 import { getCodexRequestDefaults } from "@/lib/providers/requestDefaults";
+import { extractSessionAffinityKey } from "@/sse/services/auth";
 import {
   getCodexModelScope,
   getCodexRateLimitKey,
@@ -46,6 +47,10 @@ import { applyReasoningInputPolicy } from "../services/reasoningInputPolicy.ts";
 import { getForcedReasoningEffort } from "../utils/reasoningRuleContext.ts";
 import { normalizeCodexVerbosity } from "../services/codexVerbosity.ts";
 import { getThinkingBudgetConfig, ThinkingMode } from "../services/thinkingBudget.ts";
+import {
+  codexOpaqueResponsesReplayStore,
+  type CodexOpaqueResponsesReplayItem,
+} from "../services/codexOpaqueResponsesReplayStore.ts";
 import { CORS_HEADERS } from "../utils/cors.ts";
 import { projectCodexPublicError } from "../utils/codexPublicError.ts";
 import { classifyProviderSafetyError } from "../utils/providerSafety.ts";
@@ -100,6 +105,7 @@ type WreqWebSocket = {
 };
 type WebsocketFn = (url: string, opts?: Record<string, unknown>) => Promise<WreqWebSocket>;
 type ResponsesMessageInput = { role?: unknown; phase?: unknown; content?: unknown };
+type ResponsesInputItem = Record<string, unknown>;
 
 let _websocketFn: WebsocketFn | null = null;
 let _wreqChecked = false;
@@ -252,6 +258,258 @@ function convertSystemToDeveloperRole(body: Record<string, unknown>): void {
     if (isSystemMessage) {
       item.role = "developer";
     }
+  }
+}
+
+/**
+ * Strip server-generated item IDs from the input array.
+ *
+ * The Codex /codex/responses endpoint does not persist response items even when
+ * store=true is sent. When proxy clients (e.g. OpenClaw) include response items
+ * from previous turns in the input array, those items carry server-assigned IDs
+ * (prefixed with "rs_", "fc_", "resp_", "msg_"). The Codex backend tries to
+ * validate these IDs against its persistence store and returns 404 when the items
+ * are not found (because store was effectively false).
+ *
+ * This function:
+ *   1. Removes bare string references ("rs_abc123") from the input array
+ *   2. Removes object items with type "item_reference" (explicit stored-item refs)
+ *   3. Strips the "id" field from any object in input whose id matches a
+ *      server-generated prefix (rs_, fc_, resp_, msg_) — so the content is
+ *      preserved but the backend won't try to look it up
+ */
+type CodexOpaqueReplayProvenance = {
+  readonly model: string;
+  readonly sessionId: string;
+  readonly expectedTurnMarker: string;
+};
+
+type CodexReplayRecoveryContext = {
+  replayEnabled: boolean;
+  provenance: CodexOpaqueReplayProvenance | null;
+};
+
+const codexReplayRecoveryContexts = new WeakMap<object, CodexReplayRecoveryContext>();
+
+function getCodexReplayRecoveryContext(body: unknown): CodexReplayRecoveryContext | null {
+  return body !== null && typeof body === "object" && !Array.isArray(body)
+    ? (codexReplayRecoveryContexts.get(body) ?? null)
+    : null;
+}
+
+function setCodexReplayRecoveryContext(body: unknown, context: CodexReplayRecoveryContext): void {
+  if (body !== null && typeof body === "object" && !Array.isArray(body)) {
+    codexReplayRecoveryContexts.set(body, context);
+  }
+}
+
+async function isCodexStalePrivateReplayError(response: Response): Promise<boolean> {
+  const text = await response.clone().text();
+  try {
+    const body: unknown = JSON.parse(text);
+    return hasCodexStalePrivateReplayMessage(body);
+  } catch (error) {
+    if (error instanceof SyntaxError) return false;
+    throw error;
+  }
+}
+
+function hasCodexStalePrivateReplayMessage(body: unknown): boolean {
+  if (typeof body === "string") {
+    return /invalid signature in thinking block|invalid_encrypted_content/i.test(body);
+  }
+  if (!body || typeof body !== "object") return false;
+  if (Array.isArray(body)) return body.some(hasCodexStalePrivateReplayMessage);
+  return Object.values(body).some(hasCodexStalePrivateReplayMessage);
+}
+
+function injectCodexOpaqueResponsesReplay(
+  body: Record<string, unknown>,
+  model: string,
+  sessionId: string | null
+): CodexOpaqueReplayProvenance | null {
+  if (!sessionId || !Array.isArray(body.input)) return null;
+
+  const replayChain = codexOpaqueResponsesReplayStore.getChain({ model, sessionId });
+  if (!replayChain) return null;
+
+  let provenance: CodexOpaqueReplayProvenance | null = null;
+  const currentOutputIds = collectCurrentCodexToolOutputIds(body.input);
+  const replayedCallIds = new Set<string>();
+  for (const turn of replayChain.turns) {
+    const fragment = toEligibleCodexReplayFragment(turn.items, {
+      currentInput: body.input,
+      currentOutputIds,
+      replayedCallIds,
+    });
+    if (!fragment) continue;
+
+    const outputIndex = findCurrentCodexToolOutputIndex(body.input, fragment.callId);
+    if (outputIndex === -1) continue;
+    body.input.splice(outputIndex, 0, ...fragment.items);
+    provenance = { model, sessionId, expectedTurnMarker: turn.turnMarker };
+  }
+  return provenance;
+}
+
+type CodexReplayFragment = {
+  readonly callId: string;
+  readonly items: readonly ResponsesInputItem[];
+};
+
+function collectCurrentCodexToolOutputIds(input: readonly unknown[]): ReadonlySet<string> {
+  const callIds = new Set<string>();
+  for (const item of input) {
+    const record = toResponsesInputItem(item);
+    if (!record) continue;
+    const callId = getCodexToolOutputCallId(record);
+    if (callId) callIds.add(callId);
+  }
+  return callIds;
+}
+
+type CodexReplayEligibility = {
+  readonly currentInput: readonly unknown[];
+  readonly currentOutputIds: ReadonlySet<string>;
+  readonly replayedCallIds: Set<string>;
+};
+
+function toEligibleCodexReplayFragment(
+  items: readonly CodexOpaqueResponsesReplayItem[],
+  eligibility: CodexReplayEligibility
+): CodexReplayFragment | null {
+  const { currentInput, currentOutputIds, replayedCallIds } = eligibility;
+  const call = items.find(isCodexReplayCall);
+  if (!call || !currentOutputIds.has(call.callId) || replayedCallIds.has(call.callId)) return null;
+
+  const replayItems = items
+    .filter((item) => item.type === "reasoning" || item === call)
+    .filter((item) => !hasEquivalentCodexReplayItem(currentInput, item))
+    .map(toCodexReplayInputItem);
+  replayedCallIds.add(call.callId);
+  return replayItems.length > 0 ? { callId: call.callId, items: replayItems } : null;
+}
+
+function hasEquivalentCodexReplayItem(
+  input: readonly unknown[],
+  item: CodexOpaqueResponsesReplayItem
+): boolean {
+  return input.some((value) => {
+    const record = toResponsesInputItem(value);
+    if (!record || record.type !== item.type) return false;
+    switch (item.type) {
+      case "reasoning":
+        return record.encrypted_content === item.encryptedContent;
+      case "function_call":
+        return record.call_id === item.callId;
+      case "custom_tool_call":
+        return record.call_id === item.callId;
+    }
+  });
+}
+
+function isCodexReplayCall(
+  item: CodexOpaqueResponsesReplayItem
+): item is Extract<CodexOpaqueResponsesReplayItem, { readonly callId: string }> {
+  return item.type === "function_call" || item.type === "custom_tool_call";
+}
+
+function toCodexReplayInputItem(item: CodexOpaqueResponsesReplayItem): ResponsesInputItem {
+  switch (item.type) {
+    case "reasoning":
+      return { type: item.type, encrypted_content: item.encryptedContent };
+    case "function_call":
+      return { type: item.type, call_id: item.callId, name: item.name, arguments: item.arguments };
+    case "custom_tool_call":
+      return { type: item.type, call_id: item.callId, name: item.name, input: item.input };
+  }
+}
+
+function findCurrentCodexToolOutputIndex(input: readonly unknown[], callId: string): number {
+  return input.findIndex((item) => {
+    const record = toResponsesInputItem(item);
+    return record ? getCodexToolOutputCallId(record) === callId : false;
+  });
+}
+
+function getCodexToolOutputCallId(item: ResponsesInputItem): string | null {
+  if (item.type !== "function_call_output" && item.type !== "custom_tool_call_output") return null;
+  return typeof item.call_id === "string" && item.call_id.trim() ? item.call_id : null;
+}
+
+function toResponsesInputItem(value: unknown): ResponsesInputItem | null {
+  return isResponsesInputItem(value) ? value : null;
+}
+
+function isResponsesInputItem(value: unknown): value is ResponsesInputItem {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function stripStoredItemReferences(body: Record<string, unknown>): void {
+  if (Array.isArray(body.input) && body.input.length === 0) {
+    body.input = [
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "continue" }],
+      },
+    ];
+  }
+
+  if (!Array.isArray(body.input)) return;
+
+  const SERVER_ID_PATTERN = /^(rs|fc|resp|msg)_/;
+  let strippedCount = 0;
+
+  body.input = body.input.filter((item) => {
+    // Bare string references: "rs_abc123", "resp_abc123"
+    if (typeof item === "string" && SERVER_ID_PATTERN.test(item)) {
+      strippedCount++;
+      return false;
+    }
+
+    // Object references: { type: "item_reference", id: "rs_..." }
+    if (
+      item &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      (item as Record<string, unknown>).type === "item_reference"
+    ) {
+      strippedCount++;
+      return false;
+    }
+
+    // Reasoning blobs (encrypted_content) are unusable with store=false since
+    // previous_response_id is deleted — strip them to avoid wasting context
+    // tokens (O(n^2) growth across agentic turns).
+    if (
+      item &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      (item as Record<string, unknown>).type === "reasoning"
+    ) {
+      strippedCount++;
+      return false;
+    }
+
+    // Object items with server-generated IDs: strip the id field but keep the item.
+    // e.g. { id: "rs_...", type: "reasoning", summary: [...] } → keep content, remove id
+    // e.g. { id: "fc_...", type: "function_call", ... } → keep content, remove id
+    if (item && typeof item === "object" && !Array.isArray(item)) {
+      const record = item as Record<string, unknown>;
+      if (typeof record.id === "string" && SERVER_ID_PATTERN.test(record.id)) {
+        delete record.id;
+        strippedCount++;
+      }
+    }
+
+    return true;
+  });
+
+  if (strippedCount > 0) {
+    console.debug(
+      `[Codex] stripStoredItemReferences: sanitized ${strippedCount} server-generated ID(s) from input`
+    );
   }
 }
 
@@ -894,10 +1152,34 @@ export class CodexExecutor extends BaseExecutor {
     }
 
     if (!isCodexResponsesWebSocketRequired(nextInput.model, nextInput.credentials)) {
+      const recoveryContext = getCodexReplayRecoveryContext(nextInput.body) ?? {
+        replayEnabled: true,
+        provenance: null,
+      };
+      setCodexReplayRecoveryContext(nextInput.body, recoveryContext);
+      let firstResult = await super.execute(nextInput);
+      const firstResponse = (firstResult as { response?: Response }).response;
+      const completedRecoveryContext = getCodexReplayRecoveryContext(nextInput.body);
+      if (
+        completedRecoveryContext?.provenance &&
+        firstResponse?.status === 400 &&
+        (await isCodexStalePrivateReplayError(firstResponse))
+      ) {
+        codexOpaqueResponsesReplayStore.clearChainIfCurrent(completedRecoveryContext.provenance);
+        setCodexReplayRecoveryContext(nextInput.body, {
+          replayEnabled: false,
+          provenance: null,
+        });
+        await firstResponse.body?.cancel().catch(() => undefined);
+        firstResult = await super.execute(nextInput);
+      }
       const replay = await recoverCodexReasoningReplayRejection(
-        await super.execute(nextInput),
+        firstResult,
         nextInput.body,
-        (body) => super.execute({ ...nextInput, body }),
+        (body) => {
+          setCodexReplayRecoveryContext(body, { replayEnabled: false, provenance: null });
+          return super.execute({ ...nextInput, body });
+        },
         input.log
       );
       const httpResult = replay.result;
@@ -1334,6 +1616,7 @@ export class CodexExecutor extends BaseExecutor {
         : {};
 
     const nativeCodexPassthrough = body?._nativeCodexPassthrough === true;
+    const replaySessionId = nativeCodexPassthrough ? null : extractSessionAffinityKey(body);
     const isCompactRequest = isCompactResponsesEndpoint(credentials?.requestEndpointPath);
     ensureCodexCompactionReplayTools(body, isCompactRequest);
     const requestDefaults = getCodexRequestDefaults(credentials?.providerSpecificData);
@@ -1411,6 +1694,16 @@ export class CodexExecutor extends BaseExecutor {
     stripOrphanedCodexFunctionCallOutputs(body);
     repairMissingCodexToolCallOutputs(body);
 
+    applyCodexReasoningSelection(
+      model,
+      body,
+      credentials.providerSpecificData?._omnirouteCodexThinking,
+      allowConnectionReasoningDefaults ? requestDefaults.reasoningEffort : undefined,
+      allowConnectionReasoningDefaults,
+      getForcedReasoningEffort(credentials)
+    );
+    const cleanModel = typeof body.model === "string" ? body.model : model;
+
     // ── Cache-aware system prompt handling (both paths) ──
     //
     // Convert system → developer role IN-PLACE so system prompts remain in the
@@ -1483,19 +1776,36 @@ export class CodexExecutor extends BaseExecutor {
       defaultFunctionStrict: nativeCodexPassthrough ? undefined : false,
     });
 
+    // Strip stored response item references (rs_, resp_, msg_ IDs) and unusable
+    // reasoning blobs from translated input. The /codex/responses endpoint does not
+    // persist responses even with store=true, so any references to previous response
+    // items would cause 404 errors. Skipped for native passthrough, which forwards
+    // the caller's Responses input (including opaque reasoning) untouched.
+    if (!nativeCodexPassthrough) {
+      stripStoredItemReferences(body);
+    }
+    const replayRecoveryContext = getCodexReplayRecoveryContext(bodyInput);
+    if (
+      replayRecoveryContext?.replayEnabled !== false &&
+      !nativeCodexPassthrough &&
+      replaySessionId &&
+      !replaySessionId.startsWith("input:sha256:")
+    ) {
+      const provenance = injectCodexOpaqueResponsesReplay(body, cleanModel, replaySessionId);
+      if (provenance) {
+        setCodexReplayRecoveryContext(bodyInput, { replayEnabled: true, provenance });
+      }
+    }
+    stripOrphanedCodexFunctionCallOutputs(body);
+    repairMissingCodexToolCallOutputs(body);
+
     // Issue #806: Even for native passthrough, some clients (purist completions) might indiscriminately inject
     // a `messages` or `prompt` array which the strict Codex Responses schema rejects.
     delete body.messages;
     delete body.prompt;
 
-    applyCodexReasoningSelection(
-      model,
-      body,
-      credentials.providerSpecificData?._omnirouteCodexThinking,
-      allowConnectionReasoningDefaults ? requestDefaults.reasoningEffort : undefined,
-      allowConnectionReasoningDefaults,
-      getForcedReasoningEffort(credentials)
-    );
+    // applyCodexReasoningSelection runs earlier (before replay injection) so the
+    // replay store is keyed by the clean model id.
     ensureCodexReasoningSummary(body, skipReasoningSummaryDefaults);
     if (isCompactRequest) {
       delete body.include;

@@ -32,6 +32,11 @@ import {
 import { isFeatureFlagEnabled as defaultFeatureFlag } from "@/shared/utils/featureFlags";
 import { OMNIROUTE_RESPONSE_HEADERS } from "@/shared/constants/headers";
 import { SSE_HEARTBEAT_INTERVAL_MS } from "../../config/constants.ts";
+import {
+  wrapWithCodexOpaqueResponsesReplayCapture,
+  type CodexOpaqueResponsesReplayContext,
+} from "./codexOpaqueResponsesReplayCapture.ts";
+
 /**
  * Pipeline assembly instrumentation — performance.mark() along the SSE hot path.
  * Marks are visible to Node.js perf_hooks consumers and DevTools' Performance
@@ -45,6 +50,7 @@ const PIPELINE_END = "omni-pipeline-end";
 const PIPELINE_MEASURE = "omni-pipeline";
 
 type HeadersLike = Headers | Record<string, unknown> | null | undefined;
+type StreamingController = Parameters<typeof defaultPipeWithDisconnect>[2];
 
 export interface StreamingPipelineDeps {
   wantsProgress: typeof defaultWantsProgress;
@@ -95,6 +101,7 @@ export function assembleStreamingPipeline(
     /** Total lifetime budget for this stream (see resolveStreamActiveTimeoutMs).
      * Omitted falls back to STREAM_ACTIVE_TIMEOUT_MS; 0 leaves the watchdog off. */
     activeTimeoutMs?: number;
+    codexOpaqueResponsesReplay?: CodexOpaqueResponsesReplayContext;
   },
   deps: StreamingPipelineDeps = DEFAULT_DEPS
 ) {
@@ -106,9 +113,18 @@ export function assembleStreamingPipeline(
   const progressEnabled = deps.wantsProgress(args.clientRawRequestHeaders);
   let finalStream;
 
+  const transformStream = args.codexOpaqueResponsesReplay
+    ? wrapWithCodexOpaqueResponsesReplayCapture(
+        args.codexOpaqueResponsesReplay,
+        args.transformStream
+      )
+    : args.transformStream;
   let piiStream = deps.pipeWithDisconnect(
     args.providerResponse,
-    args.transformStream,
+    // Codex replay capture wraps the transform when present (falls back to
+    // args.transformStream otherwise), and the stall watchdog is orthogonal —
+    // it observes the piped output regardless of which transform is in play.
+    transformStream,
     args.streamController,
     {
       contentStallTimeoutMs: args.contentStallTimeoutMs,
