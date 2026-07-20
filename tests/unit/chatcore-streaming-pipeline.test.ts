@@ -286,3 +286,71 @@ test("opt-out skips PII but keeps the credential transform order", () => {
   );
   assert.deepEqual(log, ["credential-flag", "heartbeat"]);
 });
+
+// Rebase guard: the Codex opaque-responses replay wrapper (param 2) and the
+// content-stall watchdog budget (param 4) landed on separate branches and both
+// touch this one pipeWithDisconnect call. They are orthogonal — dropping either
+// one silently degrades a feature while the pipeline still assembles — so pin
+// that a single request carrying both hands each one to pipeWithDisconnect.
+test("codex replay wrapping and the stall budget reach pipeWithDisconnect together", () => {
+  // A real TransformStream: the replay wrapper pipes through it for real.
+  const rawTransform = new TransformStream<Uint8Array, Uint8Array>();
+  const seen: { transform?: unknown; opts?: unknown } = {};
+  const { deps, log } = makeDeps({
+    pipeWithDisconnect: (_res: unknown, transform: unknown, _ctrl: unknown, opts: unknown) => {
+      seen.transform = transform;
+      seen.opts = opts;
+      return fakeStream("pii-base", log);
+    },
+  });
+
+  assembleStreamingPipeline(
+    baseArgs({
+      transformStream: rawTransform,
+      contentStallTimeoutMs: 90_000,
+      codexOpaqueResponsesReplay: {
+        model: "gpt-5-codex",
+        sessionId: "sess-1",
+        store: () => {},
+      },
+    }),
+    deps
+  );
+
+  assert.notEqual(seen.transform, rawTransform, "replay capture wraps the transform");
+  assert.ok(
+    (seen.transform as TransformStream).readable instanceof ReadableStream,
+    "wrapped transform is still a usable TransformStream"
+  );
+  assert.deepEqual(
+    seen.opts,
+    { contentStallTimeoutMs: 90_000, activeTimeoutMs: undefined },
+    "stall budget forwarded"
+  );
+});
+
+// Without a replay context the transform must pass through untouched, so the
+// wrapper never taps streams for non-Codex requests.
+test("stall budget is forwarded even when no codex replay context is present", () => {
+  const rawTransform = { __tag: "raw-transform" };
+  const seen: { transform?: unknown; opts?: unknown } = {};
+  const { deps, log } = makeDeps({
+    pipeWithDisconnect: (_res: unknown, transform: unknown, _ctrl: unknown, opts: unknown) => {
+      seen.transform = transform;
+      seen.opts = opts;
+      return fakeStream("pii-base", log);
+    },
+  });
+
+  assembleStreamingPipeline(
+    baseArgs({ transformStream: rawTransform, contentStallTimeoutMs: 90_000 }),
+    deps
+  );
+
+  assert.equal(seen.transform, rawTransform, "transform passed through unwrapped");
+  assert.deepEqual(
+    seen.opts,
+    { contentStallTimeoutMs: 90_000, activeTimeoutMs: undefined },
+    "stall budget forwarded"
+  );
+});

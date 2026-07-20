@@ -576,8 +576,8 @@ export function openaiResponsesToOpenAIRequest(
           } else {
             pendingReasoningContent = appendReasoningContent(pendingReasoningContent, reasoning);
           }
+          continue;
         }
-        continue;
       }
 
       // Claude → Responses stores its native thinking signature or opaque redacted

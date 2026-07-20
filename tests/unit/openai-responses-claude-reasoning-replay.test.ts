@@ -3,6 +3,15 @@ import test from "node:test";
 
 import { FORMATS } from "../../open-sse/translator/formats.ts";
 import { translateRequest } from "../../open-sse/translator/index.ts";
+import { codexOpaqueResponsesReplayStore } from "../../open-sse/services/codexOpaqueResponsesReplayStore.ts";
+
+test.afterEach(() => {
+  const entries = Object.getOwnPropertyDescriptor(
+    codexOpaqueResponsesReplayStore,
+    "entries"
+  )?.value;
+  if (entries instanceof Map) entries.clear();
+});
 
 type ClaudeBlock = Record<string, unknown>;
 type ClaudeMessage = {
@@ -46,6 +55,36 @@ test("Responses reasoning replays an encrypted summary as Claude thinking", () =
       ],
     },
   ]);
+});
+
+test("OpenAI Responses to Claude translation cannot retrieve Codex opaque replay state", () => {
+  // Given
+  const encryptedContent = "  opaque\\u0000ciphertext\\n\\t==  ";
+  const sessionId = "claude-translation-isolation-session";
+  codexOpaqueResponsesReplayStore.store({
+    model: "gpt-5.5",
+    sessionId: `session:${sessionId}`,
+    encryptedContent,
+  });
+
+  // When
+  const messages = translateResponsesToClaude([
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "continue" }],
+      session_id: sessionId,
+    },
+  ]);
+
+  // Then
+  assert.deepEqual(messages, [
+    {
+      role: "user",
+      content: [{ type: "text", text: "continue" }],
+    },
+  ]);
+  assert.equal(JSON.stringify(messages).includes(encryptedContent), false);
 });
 
 test("Responses encrypted-only reasoning replays as Claude redacted thinking", () => {
@@ -120,6 +159,11 @@ test("Responses reasoning remains before its following Claude tool use", () => {
           cache_control: { type: "ephemeral" },
         },
       ],
+    },
+    // Release pairs an unanswered tool_use with an empty tool_result.
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "call_1", content: "" }],
     },
   ]);
 });

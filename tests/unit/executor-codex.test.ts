@@ -26,6 +26,7 @@ import {
 } from "../../open-sse/services/thinkingBudget.ts";
 import { runWithCapture } from "../../open-sse/utils/providerRequestLogging.ts";
 import { CODEX_CHAT_DEFAULT_INSTRUCTIONS } from "../../open-sse/config/codexInstructions.ts";
+import { codexOpaqueResponsesReplayStore } from "../../open-sse/services/codexOpaqueResponsesReplayStore.ts";
 
 type MockCodexWebSocket = {
   send: (data: string) => void;
@@ -45,6 +46,11 @@ function getRecord(value: unknown): Record<string, unknown> {
 test.afterEach(() => {
   setThinkingBudgetConfig(DEFAULT_THINKING_CONFIG);
   __setCodexWebSocketTransportForTesting(undefined);
+  const entries = Object.getOwnPropertyDescriptor(
+    codexOpaqueResponsesReplayStore,
+    "entries"
+  )?.value;
+  if (entries instanceof Map) entries.clear();
 });
 
 async function withEnv<T>(entries: Record<string, string | undefined>, fn: () => T | Promise<T>) {
@@ -366,6 +372,320 @@ test("CodexExecutor.transformRequest sends neutral instructions for bare chat re
   assert.equal(result.model, "gpt-5.5");
   assert.equal(result.input.length, 1);
   assert.equal(result.tools, undefined);
+});
+
+test("CodexExecutor.transformRequest anchors ordered replay turns to matching function and custom tool outputs", () => {
+  // Given
+  const executor = new CodexExecutor();
+  const sessionId = "opaque-replay-ordering-session";
+  codexOpaqueResponsesReplayStore.appendTurn({
+    model: "gpt-5.5",
+    sessionId: `session:${sessionId}`,
+    turnMarker: "turn-one",
+    items: [
+      { type: "reasoning", encryptedContent: "reasoning-one" },
+      { type: "function_call", callId: "function-one", name: "read_file", arguments: "{}" },
+    ],
+  });
+  codexOpaqueResponsesReplayStore.appendTurn({
+    model: "gpt-5.5",
+    sessionId: `session:${sessionId}`,
+    turnMarker: "turn-two",
+    items: [
+      { type: "reasoning", encryptedContent: "reasoning-two" },
+      { type: "custom_tool_call", callId: "custom-two", name: "apply_patch", input: "patch" },
+    ],
+  });
+
+  // When
+  const result = executor.transformRequest(
+    "gpt-5.5-xhigh",
+    {
+      model: "gpt-5.5-xhigh",
+      session_id: sessionId,
+      input: [
+        { type: "message", role: "user", content: "Earlier client-owned user turn." },
+        { type: "function_call_output", call_id: "function-one", output: "file contents" },
+        { type: "message", role: "user", content: "Current client-owned user turn." },
+        { type: "custom_tool_call_output", call_id: "custom-two", output: "patched" },
+      ],
+    },
+    false,
+    { connectionId: "connection-a", requestEndpointPath: "/responses" }
+  );
+
+  // Then
+  assert.ok(Array.isArray(result.input));
+  assert.deepEqual(
+    result.input.map((item) => getRecord(item).type),
+    [
+      "message",
+      "reasoning",
+      "function_call",
+      "function_call_output",
+      "message",
+      "reasoning",
+      "custom_tool_call",
+      "custom_tool_call_output",
+    ]
+  );
+  assert.equal(result.model, "gpt-5.5");
+  assert.equal(getRecord(result.input[1]).encrypted_content, "reasoning-one");
+  assert.equal(getRecord(result.input[2]).call_id, "function-one");
+  assert.equal(getRecord(result.input[5]).encrypted_content, "reasoning-two");
+  assert.equal(getRecord(result.input[6]).call_id, "custom-two");
+});
+
+test("CodexExecutor.transformRequest omits detached replay before missing-output repair", () => {
+  // Given
+  const executor = new CodexExecutor();
+  const sessionId = "opaque-replay-detached-session";
+  codexOpaqueResponsesReplayStore.appendTurn({
+    model: "gpt-5.5",
+    sessionId: `session:${sessionId}`,
+    turnMarker: "detached-turn",
+    items: [
+      { type: "reasoning", encryptedContent: "detached-reasoning" },
+      { type: "function_call", callId: "detached-call", name: "read_file", arguments: "{}" },
+    ],
+  });
+
+  // When
+  const result = executor.transformRequest(
+    "gpt-5.5",
+    {
+      model: "gpt-5.5",
+      session_id: sessionId,
+      input: [
+        { type: "function_call", call_id: "detached-call", name: "read_file", arguments: "{}" },
+      ],
+    },
+    false,
+    { requestEndpointPath: "/responses" }
+  );
+
+  // Then
+  assert.ok(Array.isArray(result.input));
+  assert.equal(JSON.stringify(result.input).includes("detached-reasoning"), false);
+  assert.equal(
+    result.input.filter((item) => getRecord(item).type === "function_call_output").length,
+    1
+  );
+});
+
+test("CodexExecutor.transformRequest suppresses replay duplicates", () => {
+  // Given
+  const executor = new CodexExecutor();
+  const sessionId = "opaque-replay-duplicate-session";
+  codexOpaqueResponsesReplayStore.appendTurn({
+    model: "gpt-5.5",
+    sessionId: `session:${sessionId}`,
+    turnMarker: "duplicate-turn",
+    items: [
+      { type: "reasoning", encryptedContent: "existing-reasoning" },
+      { type: "function_call", callId: "existing-call", name: "read_file", arguments: "{}" },
+    ],
+  });
+
+  // When
+  const result = executor.transformRequest(
+    "gpt-5.5",
+    {
+      model: "gpt-5.5",
+      session_id: sessionId,
+      input: [
+        { type: "reasoning", encrypted_content: "existing-reasoning" },
+        { type: "function_call", call_id: "existing-call", name: "read_file", arguments: "{}" },
+        { type: "function_call_output", call_id: "existing-call", output: "file contents" },
+      ],
+    },
+    false,
+    { requestEndpointPath: "/responses" }
+  );
+
+  // Then
+  assert.ok(Array.isArray(result.input));
+  assert.equal(
+    result.input.filter((item) => getRecord(item).encrypted_content === "existing-reasoning")
+      .length,
+    1
+  );
+  assert.equal(
+    result.input.filter(
+      (item) =>
+        getRecord(item).type === "function_call" && getRecord(item).call_id === "existing-call"
+    ).length,
+    1
+  );
+});
+
+test("CodexExecutor.transformRequest isolates replay by resolved model and canonical session", () => {
+  // Given
+  const executor = new CodexExecutor();
+  const sessionId = "opaque-replay-isolation-session";
+  codexOpaqueResponsesReplayStore.appendTurn({
+    model: "gpt-5.5",
+    sessionId: `session:${sessionId}`,
+    turnMarker: "gpt-5-5-turn",
+    items: [
+      { type: "reasoning", encryptedContent: "opaque-for-gpt-5-5" },
+      { type: "function_call", callId: "gpt-5-5-call", name: "read_file", arguments: "{}" },
+    ],
+  });
+  codexOpaqueResponsesReplayStore.appendTurn({
+    model: "gpt-5.6",
+    sessionId: `session:${sessionId}`,
+    turnMarker: "gpt-5-6-turn",
+    items: [
+      { type: "reasoning", encryptedContent: "opaque-for-gpt-5-6" },
+      { type: "function_call", callId: "gpt-5-6-call", name: "read_file", arguments: "{}" },
+    ],
+  });
+
+  // When
+  const sameModel = executor.transformRequest(
+    "gpt-5.5-xhigh",
+    {
+      model: "gpt-5.5-xhigh",
+      session_id: sessionId,
+      input: [{ type: "function_call_output", call_id: "gpt-5-5-call", output: "file contents" }],
+    },
+    false,
+    { requestEndpointPath: "/responses" }
+  );
+  const otherModel = executor.transformRequest(
+    "gpt-5.6",
+    {
+      model: "gpt-5.6",
+      session_id: sessionId,
+      input: [{ type: "function_call_output", call_id: "gpt-5-6-call", output: "file contents" }],
+    },
+    false,
+    { requestEndpointPath: "/responses" }
+  );
+  const otherSession = executor.transformRequest(
+    "gpt-5.5",
+    {
+      model: "gpt-5.5",
+      session_id: "unmatched-opaque-replay-session",
+      input: [{ type: "function_call_output", call_id: "gpt-5-5-call", output: "file contents" }],
+    },
+    false,
+    { requestEndpointPath: "/responses" }
+  );
+
+  // Then
+  assert.equal(JSON.stringify(sameModel.input).includes("opaque-for-gpt-5-5"), true);
+  assert.equal(JSON.stringify(otherModel.input).includes("opaque-for-gpt-5-6"), true);
+  assert.equal(JSON.stringify(otherSession.input).includes("opaque-for-gpt-5-5"), false);
+});
+
+test("CodexExecutor.transformRequest leaves the cache-empty path unchanged", () => {
+  const executor = new CodexExecutor();
+  const sessionId = "opaque-replay-empty-session";
+  const body = {
+    model: "gpt-5.5",
+    session_id: sessionId,
+    input: [{ role: "user", content: "Continue." }],
+  };
+  const credentials = { requestEndpointPath: "/responses" };
+
+  const beforeStoreMiss = executor.transformRequest("gpt-5.5", body, false, credentials);
+  codexOpaqueResponsesReplayStore.store({
+    model: "gpt-5.5",
+    sessionId: "session:different-opaque-replay-session",
+    encryptedContent: "opaque-for-a-different-session",
+  });
+  const afterStoreMiss = executor.transformRequest("gpt-5.5", body, false, credentials);
+
+  assert.deepEqual(afterStoreMiss, beforeStoreMiss);
+});
+
+test("CodexExecutor.transformRequest leaves native Responses caller-owned when replay state exists", () => {
+  // Given
+  const executor = new CodexExecutor();
+  const sessionId = "opaque-replay-bypass-session";
+  const encryptedContent = "  opaque\\u0000ciphertext\\n\\t==  ";
+  const input = [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "Continue." }],
+    },
+  ];
+  codexOpaqueResponsesReplayStore.store({
+    model: "gpt-5.5",
+    sessionId: `session:${sessionId}`,
+    encryptedContent,
+  });
+
+  // When
+  const nativeResult = executor.transformRequest(
+    "gpt-5.5",
+    {
+      _nativeCodexPassthrough: true,
+      model: "gpt-5.5",
+      session_id: sessionId,
+      input,
+    },
+    false,
+    { requestEndpointPath: "/responses" }
+  );
+
+  // Then
+  assert.deepEqual(nativeResult.input, input);
+  assert.equal(JSON.stringify(nativeResult.input).includes(encryptedContent), false);
+  assert.equal(nativeResult.store, false);
+});
+
+test("CodexExecutor.transformRequest does not inject replay without a caller session", () => {
+  // Given
+  const executor = new CodexExecutor();
+  const encryptedContent = "  opaque\\u0000ciphertext\\n\\t==  ";
+  codexOpaqueResponsesReplayStore.store({
+    model: "gpt-5.5",
+    sessionId: "session:opaque-replay-session",
+    encryptedContent,
+  });
+
+  // When
+  const sessionlessResult = executor.transformRequest(
+    "gpt-5.5",
+    { model: "gpt-5.5", input: [{ role: "user", content: "Continue." }] },
+    false,
+    { requestEndpointPath: "/responses" }
+  );
+
+  // Then
+  assert.equal(JSON.stringify(sessionlessResult.input).includes(encryptedContent), false);
+});
+
+test("non-Codex execution cannot inject matching Codex opaque replay state", async () => {
+  // Given
+  const encryptedContent = "  opaque\\u0000ciphertext\\n\\t==  ";
+  const sessionId = "non-codex-opaque-replay-session";
+  codexOpaqueResponsesReplayStore.store({
+    model: "gpt-5.5",
+    sessionId: `session:${sessionId}`,
+    encryptedContent,
+  });
+  const { getExecutor } = await import("../../open-sse/executors/index.ts");
+  const executor = await getExecutor("openai");
+
+  // When
+  const result = executor.transformRequest(
+    "gpt-5.5",
+    {
+      model: "gpt-5.5",
+      session_id: sessionId,
+      input: [{ type: "message", role: "user", content: "Continue." }],
+    },
+    false,
+    {}
+  );
+
+  // Then
+  assert.equal(JSON.stringify(result).includes(encryptedContent), false);
 });
 
 test("CodexExecutor.transformRequest preserves compact requests and native passthrough semantics", () => {
@@ -1616,4 +1936,198 @@ test("Codex internal websocket bridge rejects non-object JSON payloads", async (
     assert.equal(body.error.code, "invalid_json");
     assert.match(body.error.message, /JSON object/);
   });
+});
+
+async function executeCodexReplayRecoveryScenario({
+  sessionId,
+  native = false,
+  clientOwned = false,
+  errorBody,
+  retryResponse,
+  beforeFirstResponse,
+}: {
+  readonly sessionId: string;
+  readonly native?: boolean;
+  readonly clientOwned?: boolean;
+  readonly errorBody: unknown;
+  readonly retryResponse?: { readonly body: unknown; readonly status: number };
+  readonly beforeFirstResponse?: () => void;
+}): Promise<{
+  readonly requests: readonly string[];
+  readonly status: number;
+}> {
+  const executor = new CodexExecutor();
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  globalThis.fetch = async (_url, init) => {
+    requests.push(String(init?.body));
+    if (requests.length === 1) beforeFirstResponse?.();
+    const retryResult = requests.length === 1 ? null : (retryResponse ?? { body: {}, status: 200 });
+    return new Response(JSON.stringify(requests.length === 1 ? errorBody : retryResult.body), {
+      status: requests.length === 1 ? 400 : retryResult.status,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const result = await executor.execute({
+      model: "gpt-5.5",
+      body: {
+        ...(native ? { _nativeCodexPassthrough: true } : {}),
+        model: "gpt-5.5",
+        session_id: sessionId,
+        input: clientOwned
+          ? [
+              { type: "reasoning", encrypted_content: "client-owned-ciphertext" },
+              { type: "function_call_output", call_id: "client-call", output: "file contents" },
+            ]
+          : [{ type: "function_call_output", call_id: "replay-call", output: "file contents" }],
+      },
+      stream: true,
+      credentials: { accessToken: "codex-token", requestEndpointPath: "/responses" },
+    });
+    return { requests, status: result.response.status };
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+function seedCodexReplay(sessionId: string, turnMarker = "stale-turn"): void {
+  codexOpaqueResponsesReplayStore.appendTurn({
+    model: "gpt-5.5",
+    sessionId: `session:${sessionId}`,
+    turnMarker,
+    items: [
+      { type: "reasoning", encryptedContent: "opaque-private-replay" },
+      { type: "function_call", callId: "replay-call", name: "read_file", arguments: "{}" },
+    ],
+  });
+}
+
+test("CodexExecutor.execute retries a classified stale private replay without reinjecting it", async () => {
+  // Given
+  const sessionId = "stale-private-replay-retry";
+  seedCodexReplay(sessionId);
+
+  // When
+  const result = await executeCodexReplayRecoveryScenario({
+    sessionId,
+    errorBody: { error: { message: "Invalid signature in thinking block" } },
+    retryResponse: { body: { id: "resp_recovered" }, status: 200 },
+  });
+
+  // Then
+  assert.equal(result.status, 200);
+  assert.equal(result.requests.length, 2);
+  assert.equal(result.requests[0]?.includes("opaque-private-replay"), true);
+  assert.equal(result.requests[1]?.includes("opaque-private-replay"), false);
+  assert.equal(
+    codexOpaqueResponsesReplayStore.getChain({
+      model: "gpt-5.5",
+      sessionId: `session:${sessionId}`,
+    }),
+    null
+  );
+});
+
+test("CodexExecutor.execute leaves unclassified replay failures unchanged", async () => {
+  // Given
+  const sessionId = "unclassified-private-replay";
+  seedCodexReplay(sessionId);
+
+  // When
+  const result = await executeCodexReplayRecoveryScenario({
+    sessionId,
+    errorBody: { error: { message: "Unsupported parameter: temperature" } },
+  });
+
+  // Then
+  assert.equal(result.status, 400);
+  assert.equal(result.requests.length, 1);
+  assert.notEqual(
+    codexOpaqueResponsesReplayStore.getChain({
+      model: "gpt-5.5",
+      sessionId: `session:${sessionId}`,
+    }),
+    null
+  );
+});
+
+test("CodexExecutor.execute does not recover native or client-owned invalid ciphertext", async () => {
+  // Given
+  const nativeSessionId = "native-private-replay";
+  const clientOwnedSessionId = "client-owned-private-replay";
+  seedCodexReplay(nativeSessionId);
+  seedCodexReplay(clientOwnedSessionId);
+  const errorBody = { error: { message: "invalid_encrypted_content" } };
+
+  // When
+  const nativeResult = await executeCodexReplayRecoveryScenario({
+    sessionId: nativeSessionId,
+    native: true,
+    errorBody,
+  });
+  const clientOwnedResult = await executeCodexReplayRecoveryScenario({
+    sessionId: clientOwnedSessionId,
+    clientOwned: true,
+    errorBody,
+  });
+
+  // Then
+  assert.equal(nativeResult.requests.length, 1);
+  assert.equal(clientOwnedResult.requests.length, 1);
+  assert.notEqual(
+    codexOpaqueResponsesReplayStore.getChain({
+      model: "gpt-5.5",
+      sessionId: `session:${nativeSessionId}`,
+    }),
+    null
+  );
+  assert.notEqual(
+    codexOpaqueResponsesReplayStore.getChain({
+      model: "gpt-5.5",
+      sessionId: `session:${clientOwnedSessionId}`,
+    }),
+    null
+  );
+});
+
+test("CodexExecutor.execute retries stale replay exactly once when retry fails", async () => {
+  // Given
+  const sessionId = "failed-private-replay-retry";
+  seedCodexReplay(sessionId);
+
+  // When
+  const result = await executeCodexReplayRecoveryScenario({
+    sessionId,
+    errorBody: { error: { message: "invalid_encrypted_content" } },
+    retryResponse: { body: { error: { message: "invalid_encrypted_content" } }, status: 400 },
+  });
+
+  // Then
+  assert.equal(result.status, 400);
+  assert.equal(result.requests.length, 2);
+});
+
+test("CodexExecutor.execute preserves newer replay turns during stale recovery", async () => {
+  // Given
+  const sessionId = "newer-private-replay-turn";
+  seedCodexReplay(sessionId, "stale-turn");
+
+  // When
+  const result = await executeCodexReplayRecoveryScenario({
+    sessionId,
+    errorBody: { error: { message: "invalid_encrypted_content" } },
+    retryResponse: { body: { id: "resp_recovered" }, status: 200 },
+    beforeFirstResponse: () => seedCodexReplay(sessionId, "newer-turn"),
+  });
+
+  // Then
+  assert.equal(result.requests.length, 2);
+  assert.equal(
+    codexOpaqueResponsesReplayStore
+      .getChain({ model: "gpt-5.5", sessionId: `session:${sessionId}` })
+      ?.turns.at(-1)?.turnMarker,
+    "newer-turn"
+  );
 });
