@@ -258,6 +258,95 @@ test("CodexExecutor.transformRequest injects default instructions, clamps reason
 
 // Issue #2608: gpt-5.5 models reject residual Chat Completions fields via Codex OAuth.
 // The non-passthrough path must strip ALL non-Responses-API fields using an allowlist.
+test("CodexExecutor.transformRequest converts Cursor tool and image content into valid Responses input", () => {
+  const executor = new CodexExecutor();
+  const screenshot = "data:image/png;base64,QUJDRA==";
+  const result = executor.transformRequest(
+    "gpt-5.6-terra",
+    {
+      model: "gpt-5.6-terra",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Inspect this image and read the file." },
+            {
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data: "QUJDRA==" },
+            },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "I will inspect the file." },
+            {
+              type: "tool_use",
+              id: "tool-read-1",
+              name: "read_file",
+              input: { path: "README.md" },
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-read-1",
+              content: [
+                { type: "text", text: "README contents" },
+                {
+                  type: "image",
+                  source: { type: "base64", media_type: "image/png", data: "QUJDRA==" },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      tools: [
+        { type: "function", function: { name: "read_file", parameters: { type: "object" } } },
+      ],
+    },
+    false,
+    { requestEndpointPath: "/responses" }
+  );
+
+  assert.deepEqual(result.input, [
+    {
+      type: "message",
+      role: "user",
+      content: [
+        { type: "input_text", text: "Inspect this image and read the file." },
+        { type: "input_image", image_url: screenshot },
+      ],
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "I will inspect the file." }],
+    },
+    {
+      type: "function_call",
+      call_id: "tool-read-1",
+      name: "read_file",
+      arguments: '{"path":"README.md"}',
+    },
+    {
+      type: "function_call_output",
+      call_id: "tool-read-1",
+      output: [
+        { type: "input_text", text: "README contents" },
+        { type: "input_image", image_url: screenshot },
+      ],
+    },
+  ]);
+  assert.equal(JSON.stringify(result.input).includes('"type":"tool_use"'), false);
+  assert.equal(JSON.stringify(result.input).includes('"type":"tool_result"'), false);
+  assert.equal(JSON.stringify(result.input).includes('"type":"image"'), false);
+});
+
 test("CodexExecutor.transformRequest non-passthrough allowlist strips all residual Chat Completions fields (#2608)", () => {
   const executor = new CodexExecutor();
   const body = {

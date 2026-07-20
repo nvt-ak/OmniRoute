@@ -63,6 +63,7 @@ import { hasCodexSsePeekProgress } from "./codex/ssePeekProgress.ts";
 import * as overloadedOutput from "./codex/sseOverloadedOutput.ts";
 import * as modelUnavailable from "./codex/sseModelUnavailable.ts";
 import { normalizeCodexResponsesInput } from "../utils/responsesInputNormalization.ts";
+import { generateToolCallId } from "../translator/helpers/toolCallHelper.ts";
 import * as prl from "../utils/providerRequestLogging.ts";
 import { createRequire } from "module";
 import { loadDynamicModule } from "./codex/wreqLoader.ts";
@@ -106,6 +107,23 @@ type WreqWebSocket = {
 type WebsocketFn = (url: string, opts?: Record<string, unknown>) => Promise<WreqWebSocket>;
 type ResponsesMessageInput = { role?: unknown; phase?: unknown; content?: unknown };
 type ResponsesInputItem = Record<string, unknown>;
+
+type CursorContentPart = {
+  type?: unknown;
+  id?: unknown;
+  name?: unknown;
+  input?: unknown;
+  tool_use_id?: unknown;
+  content?: unknown;
+  image_url?: unknown;
+  image?: unknown;
+  source?: unknown;
+  detail?: unknown;
+  text?: unknown;
+  url?: unknown;
+  data?: unknown;
+  media_type?: unknown;
+};
 
 let _websocketFn: WebsocketFn | null = null;
 let _wreqChecked = false;
@@ -564,6 +582,149 @@ function stripOrphanedCodexFunctionCallOutputs(body: Record<string, unknown>): v
       `[Codex] stripOrphanedCodexFunctionCallOutputs: removed ${removedCount} orphaned function_call_output item(s)`
     );
   }
+}
+
+function toCursorContentPart(value: unknown): CursorContentPart | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as CursorContentPart)
+    : null;
+}
+
+function toResponsesImageInput(part: CursorContentPart): ResponsesInputItem | null {
+  if (part.type === "image_url") {
+    const imageUrl =
+      typeof part.image_url === "string"
+        ? part.image_url
+        : toCursorContentPart(part.image_url)?.url;
+    if (typeof imageUrl !== "string" || !imageUrl) return null;
+    const image: ResponsesInputItem = { type: "input_image", image_url: imageUrl };
+    if (part.detail !== undefined) image.detail = part.detail;
+    return image;
+  }
+
+  if (part.type === "image") {
+    if (typeof part.image === "string" && part.image) {
+      return {
+        type: "input_image",
+        image_url: part.image,
+        ...(part.detail !== undefined ? { detail: part.detail } : {}),
+      };
+    }
+
+    const source = toCursorContentPart(part.source);
+    if (source?.type === "base64" && typeof source.data === "string" && source.data) {
+      const mediaType = typeof source.media_type === "string" ? source.media_type : "image/png";
+      return {
+        type: "input_image",
+        image_url: `data:${mediaType};base64,${source.data}`,
+        ...(part.detail !== undefined ? { detail: part.detail } : {}),
+      };
+    }
+    if (source?.type === "url" && typeof source.url === "string" && source.url) {
+      return {
+        type: "input_image",
+        image_url: source.url,
+        ...(part.detail !== undefined ? { detail: part.detail } : {}),
+      };
+    }
+  }
+
+  return null;
+}
+
+function toToolOutputContent(content: unknown): unknown {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return content == null ? "" : JSON.stringify(content);
+
+  const output: ResponsesInputItem[] = [];
+  for (const contentValue of content) {
+    const part = toCursorContentPart(contentValue);
+    if (!part) {
+      if (typeof contentValue === "string") output.push({ type: "input_text", text: contentValue });
+      continue;
+    }
+    if (part.type === "text") {
+      output.push({ type: "input_text", text: typeof part.text === "string" ? part.text : "" });
+      continue;
+    }
+    const image = toResponsesImageInput(part);
+    if (image) output.push(image);
+  }
+
+  return output.length > 0 ? output : "";
+}
+
+function convertCursorMessagesToResponsesInput(
+  messages: readonly ResponsesMessageInput[]
+): unknown[] {
+  const input: unknown[] = [];
+
+  for (const message of messages) {
+    const role = typeof message.role === "string" ? message.role : "user";
+    const content = typeof message.content === "string" ? [message.content] : message.content;
+    const messageContent: ResponsesInputItem[] = [];
+    const extractedItems: ResponsesInputItem[] = [];
+
+    if (Array.isArray(content)) {
+      for (const contentValue of content) {
+        if (typeof contentValue === "string") {
+          messageContent.push({
+            type: role === "assistant" ? "output_text" : "input_text",
+            text: contentValue,
+          });
+          continue;
+        }
+
+        const part = toCursorContentPart(contentValue);
+        if (!part) continue;
+        if (part.type === "text") {
+          messageContent.push({
+            type: role === "assistant" ? "output_text" : "input_text",
+            text: typeof part.text === "string" ? part.text : "",
+          });
+          continue;
+        }
+        if (part.type === "tool_use") {
+          const name = typeof part.name === "string" ? part.name.trim() : "";
+          if (!name) continue;
+          const callId =
+            typeof part.id === "string" && part.id.trim() ? part.id : generateToolCallId();
+          extractedItems.push({
+            type: "function_call",
+            call_id: callId,
+            name,
+            arguments:
+              typeof part.input === "string" ? part.input : JSON.stringify(part.input ?? {}),
+          });
+          continue;
+        }
+        if (part.type === "tool_result") {
+          const callId = typeof part.tool_use_id === "string" ? part.tool_use_id.trim() : "";
+          if (!callId) continue;
+          extractedItems.push({
+            type: "function_call_output",
+            call_id: callId,
+            output: toToolOutputContent(part.content),
+          });
+          continue;
+        }
+        const image = toResponsesImageInput(part);
+        if (image && role !== "assistant") messageContent.push(image);
+      }
+    }
+
+    if (messageContent.length > 0) {
+      input.push({
+        type: "message",
+        role,
+        ...(typeof message.phase === "string" ? { phase: message.phase } : {}),
+        content: messageContent,
+      });
+    }
+    input.push(...extractedItems);
+  }
+
+  return input;
 }
 
 export function isCompactResponsesEndpoint(endpointPath: unknown): boolean {
@@ -1647,30 +1808,7 @@ export class CodexExecutor extends BaseExecutor {
     // Issue #1832 & #1853: Map messages to input for clients like Cursor 5.5 that use responses/compact but send messages instead of input.
     // This MUST run before convertSystemToDeveloperRole.
     if (!body.input && Array.isArray(body.messages)) {
-      body.input = body.messages.map((msg: ResponsesMessageInput) => ({
-        type: "message",
-        role: typeof msg.role === "string" ? msg.role : "user",
-        ...(typeof msg.phase === "string" ? { phase: msg.phase } : {}),
-        content:
-          typeof msg.content === "string"
-            ? [{ type: "input_text", text: msg.content }]
-            : Array.isArray(msg.content)
-              ? msg.content.map((contentPart: unknown) => {
-                  if (
-                    contentPart &&
-                    typeof contentPart === "object" &&
-                    !Array.isArray(contentPart) &&
-                    (contentPart as Record<string, unknown>).type === "text"
-                  ) {
-                    return {
-                      type: "input_text",
-                      text: (contentPart as Record<string, unknown>).text,
-                    };
-                  }
-                  return contentPart;
-                })
-              : [],
-      }));
+      body.input = convertCursorMessagesToResponsesInput(body.messages);
     } else if (!body.input && typeof body.prompt === "string" && body.prompt.trim()) {
       // Issue #1872: Cursor occasionally passes the request as `prompt` instead of `messages`.
       body.input = [
