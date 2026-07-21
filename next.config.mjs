@@ -259,6 +259,8 @@ const nextConfig = {
       "./open-sse/services/compression/rules/**/*.json",
       "./open-sse/lib/deepseek-pow-hash.js",
       "./open-sse/lib/deepseek-pow-worker.mjs",
+      // Thinking-suffix model capability registry (read via fs at runtime, #thinking-suffix)
+      "./open-sse/services/thinking/models.json",
       // sql.js WASM is loaded at runtime by the sqljsAdapter fallback tier
       // (better-sqlite3 → node:sqlite → sql.js). Next traces sql-wasm.js but can
       // omit the runtime sql-wasm.wasm asset from the standalone bundle.

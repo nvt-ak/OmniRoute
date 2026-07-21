@@ -120,6 +120,7 @@ import { createPreparedRequestLogger } from "../utils/providerRequestLogging.ts"
 import { summarizeToolSources } from "../utils/toolSources.ts";
 import { applyClaudeEffortVariant } from "./chatCore/claudeEffortVariant.ts";
 import { applyKimiCodingEffortVariant } from "./chatCore/kimiCodingEffortVariant.ts";
+import { applyThinkingSuffixVariant } from "./chatCore/thinkingSuffixVariant.ts";
 import {
   getStripTypesForProviderModel,
   stripIncompatibleMessageContent,
@@ -749,6 +750,25 @@ async function handleChatCoreInner({
     nativeCodexPassthrough ||
     nativeXaiResponsesPassthrough ||
     nativeOpenAICompatibleResponsesPassthrough;
+
+  // Thinking-suffix (Point 2): inject provider-native thinking config for THIS target from
+  // a model-name suffix — the pool suffix stashed at chat.ts (Point 1) or a suffix on a bare
+  // single-model request. Runs once per target (pools re-enter handleChatCore per target) so
+  // each target's format gets the correct wiring, and BEFORE the summarizeThinking display
+  // patch so that patch can add display:"summarized". Mirrors applyClaudeEffortVariant.
+  {
+    const thinkingVariant = applyThinkingSuffixVariant({
+      provider,
+      effectiveModel,
+      body,
+      sourceFormat,
+      targetFormat,
+    });
+    effectiveModel = thinkingVariant.effectiveModel;
+    if (thinkingVariant.log) {
+      log?.info?.("THINKING-SUFFIX", thinkingVariant.log);
+    }
+  }
 
   // Track pending requests before slower optional enrichment (settings, logging,
   // compression) so internal usage/runtime counters stay accurate even when
