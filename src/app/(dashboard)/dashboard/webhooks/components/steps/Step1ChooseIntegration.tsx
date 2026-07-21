@@ -8,8 +8,8 @@ interface Step1Props {
   t: (key: string) => string;
 }
 
-const KINDS: WebhookKind[] = ["slack", "telegram", "discord", "custom"];
-const COMING_SOON: ComingSoonKind[] = ["email", "pagerduty", "teams"];
+const KINDS: WebhookKind[] = ["slack", "telegram", "discord", "msteams", "custom"];
+const COMING_SOON: ComingSoonKind[] = ["email", "pagerduty"];
 
 export function Step1ChooseIntegration({ selected, onSelect, t }: Step1Props) {
   return (

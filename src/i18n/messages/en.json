@@ -1516,14 +1516,14 @@
       "telegramDesc": "Send event messages using a Telegram bot",
       "discord": "Discord",
       "discordDesc": "Deliver real-time updates directly to a Discord server",
+      "msteams": "Microsoft Teams",
+      "msteamsDesc": "Post system events to a Teams channel or group chat via a Workflows webhook",
       "custom": "Custom Webhook",
       "customDesc": "Deliver system event payloads to any HTTPS endpoint",
       "email": "Email Notification",
       "emailDesc": "Receive summary updates via email",
       "pagerduty": "PagerDuty",
-      "pagerdutyDesc": "Trigger alerts on PagerDuty for critical system issues",
-      "teams": "Microsoft Teams",
-      "teamsDesc": "Forward system notifications to Microsoft Teams channels"
+      "pagerdutyDesc": "Trigger alerts on PagerDuty for critical system issues"
     },
     "testPayloadSent": "Test Payload Sent",
     "testResponse": "Test Response",
@@ -1545,6 +1545,16 @@
       "webhookUrlPlaceholder": "https://discord.com/api/webhooks/...",
       "webhookUrlHint": "The webhook URL copied from your Discord channel integration settings.",
       "tutorial": "How to create a Discord webhook:"
+    },
+    "msteams": {
+      "webhookUrl": "Teams Workflow Webhook URL",
+      "webhookUrlPlaceholder": "https://prod-XX.REGION.logic.azure.com:443/workflows/...",
+      "webhookUrlHint": "The Workflows (Power Automate) webhook URL. The classic Office 365 Connector URL (webhook.office.com) is retired and no longer works.",
+      "tutorial": "How to create a Teams Workflow webhook:",
+      "tutorialStep1": "In the target channel or group chat, open the ⋯ menu and choose Workflows.",
+      "tutorialStep2": "Pick the template \"Post to a channel when a webhook request is received\" (or \"…to a chat\" for a group chat).",
+      "tutorialStep3": "Set \"Who can trigger the flow?\" to Anyone, then create the flow.",
+      "tutorialStep4": "Copy the generated webhook URL and paste it above."
     },
     "slack": {
       "webhookUrl": "Slack Webhook URL",

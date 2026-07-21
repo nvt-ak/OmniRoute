@@ -11,6 +11,7 @@ import {
   type SlackConfig,
   type TelegramConfig,
   type DiscordConfig,
+  type MsTeamsConfig,
   type CustomConfig,
 } from "./steps/Step2ConfigureIntegration";
 import { Step3EventsAndTest } from "./steps/Step3EventsAndTest";
@@ -33,6 +34,7 @@ interface WizardState {
   slack: SlackConfig;
   telegram: TelegramConfig;
   discord: DiscordConfig;
+  msteams: MsTeamsConfig;
   custom: CustomConfig;
   events: string[];
   enabled: boolean;
@@ -44,6 +46,7 @@ const INITIAL: WizardState = {
   slack: { webhookUrl: "" },
   telegram: { botToken: "", chatId: "" },
   discord: { webhookUrl: "" },
+  msteams: { webhookUrl: "" },
   custom: { endpointUrl: "", secretKey: "" },
   events: ["*"],
   enabled: true,
@@ -75,6 +78,7 @@ function step2Valid(state: WizardState, isEditing: boolean): boolean {
     );
   }
   if (kind === "discord") return state.discord.webhookUrl.trim().length > 0;
+  if (kind === "msteams") return state.msteams.webhookUrl.trim().length > 0;
   if (kind === "custom") return state.custom.endpointUrl.trim().length > 0;
   return false;
 }
@@ -119,6 +123,7 @@ export function AddWebhookWizard({
     const { kind } = state;
     if (kind === "slack") return { kind, url: state.slack.webhookUrl };
     if (kind === "discord") return { kind, url: state.discord.webhookUrl };
+    if (kind === "msteams") return { kind, url: state.msteams.webhookUrl };
     if (kind === "telegram") {
       const payload: Record<string, unknown> = { kind, url: state.telegram.chatId };
       if (state.telegram.botToken.trim()) {
@@ -273,10 +278,12 @@ export function AddWebhookWizard({
               slack={state.slack}
               telegram={state.telegram}
               discord={state.discord}
+              msteams={state.msteams}
               custom={state.custom}
               onChangeSlack={(v) => setState((s) => ({ ...s, slack: v }))}
               onChangeTelegram={(v) => setState((s) => ({ ...s, telegram: v }))}
               onChangeDiscord={(v) => setState((s) => ({ ...s, discord: v }))}
+              onChangeMsTeams={(v) => setState((s) => ({ ...s, msteams: v }))}
               onChangeCustom={(v) => setState((s) => ({ ...s, custom: v }))}
               t={t}
               isEditing={isEditing}

@@ -10,6 +10,7 @@ import { decryptMetadata } from "@/lib/webhookDispatcher";
 import { buildSlackPayload } from "@/lib/webhooks/integrations/slack";
 import { buildTelegramUrl, buildTelegramPayload } from "@/lib/webhooks/integrations/telegram";
 import { buildDiscordPayload } from "@/lib/webhooks/integrations/discord";
+import { buildMsTeamsPayload } from "@/lib/webhooks/integrations/msteams";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import { insertDelivery } from "@/lib/db/webhookDeliveries";
 import { fetchWebhookUrl } from "@/shared/network/webhookFetch";
@@ -108,6 +109,12 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
       fetchUrl = webhook.url;
     } else if (kind === "discord") {
       payloadSent = buildDiscordPayload("test.ping", testData) as Record<string, unknown>;
+      fetchUrl = webhook.url;
+    } else if (kind === "msteams") {
+      payloadSent = buildMsTeamsPayload("test.ping", testData) as unknown as Record<
+        string,
+        unknown
+      >;
       fetchUrl = webhook.url;
     } else if (kind === "telegram") {
       const meta = decryptMetadata(webhook.metadata_encrypted ?? null);
