@@ -6,7 +6,7 @@
 import { getDbInstance } from "./core";
 import crypto from "crypto";
 
-export type WebhookKind = "slack" | "telegram" | "discord" | "custom";
+export type WebhookKind = "slack" | "telegram" | "discord" | "msteams" | "custom";
 
 export interface Webhook {
   id: string;

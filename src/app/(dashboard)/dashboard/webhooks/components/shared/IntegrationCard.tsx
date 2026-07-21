@@ -3,28 +3,28 @@
 import Badge from "@/shared/components/Badge";
 import Icon from "@/shared/components/Icon";
 
-export type WebhookKind = "slack" | "telegram" | "discord" | "custom";
-export type ComingSoonKind = "email" | "pagerduty" | "teams";
+export type WebhookKind = "slack" | "telegram" | "discord" | "msteams" | "custom";
+export type ComingSoonKind = "email" | "pagerduty";
 type AnyKind = WebhookKind | ComingSoonKind;
 
 const KIND_ICONS: Record<AnyKind, string> = {
   slack: "chat",
   telegram: "send",
   discord: "forum",
+  msteams: "groups",
   custom: "webhook",
   email: "email",
   pagerduty: "notifications_active",
-  teams: "groups",
 };
 
 const KIND_COLORS: Record<AnyKind, string> = {
   slack: "text-chart-1",
   telegram: "text-chart-2",
   discord: "text-chart-3",
+  msteams: "text-chart-5",
   custom: "text-chart-4",
   email: "text-text-muted",
   pagerduty: "text-text-muted",
-  teams: "text-text-muted",
 };
 
 interface IntegrationCardProps {
