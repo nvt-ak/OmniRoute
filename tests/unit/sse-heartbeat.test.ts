@@ -103,7 +103,7 @@ test("createSseHeartbeatTransform clears the interval when aborted", async () =>
 
 const { shapeForClientFormat } = await import("../../open-sse/utils/sseHeartbeat.ts");
 
-test("shape: anthropic-ping emits event: ping with empty JSON data", async () => {
+test("shape: anthropic-ping emits event: ping with a typed JSON data frame", async () => {
   await withFakeIntervals(async (intervals) => {
     const transform = createSseHeartbeatTransform({ intervalMs: 100, shape: "anthropic-ping" });
     const writer = transform.writable.getWriter();
@@ -122,6 +122,10 @@ test("shape: anthropic-ping emits event: ping with empty JSON data", async () =>
     await pump;
 
     assert.equal(emitted[0], 'event: ping\ndata: {"type":"ping"}\n\n');
+
+    const dataLine = emitted[0].split("\n").find((line) => line.startsWith("data: "));
+    const parsed = JSON.parse(dataLine.slice("data: ".length));
+    assert.equal(parsed.type, "ping");
   });
 });
 

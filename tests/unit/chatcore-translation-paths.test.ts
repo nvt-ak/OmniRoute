@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CALL_LOG_SETTLE_TIMEOUT_MS } from "../helpers/callLogSettle.ts";
+import { buildClaudePassthroughBody } from "../../open-sse/handlers/chatCore/claudePassthroughBody.ts";
 const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-chatcore-translation-"));
 const TEST_DATA_DIR = path.join(TEST_ROOT, "data");
 const TEST_PLUGINS_DIR = path.join(TEST_ROOT, "plugins");
@@ -1316,6 +1317,41 @@ test("chatCore builds Claude Code-compatible upstream requests for CC providers"
   assert.equal(typeof call.body.metadata.user_id, "string");
   assert.equal(call.body.messages[0].role, "user");
   assert.equal(call.body.messages[0].content[0].text, "Ping");
+});
+
+test("Claude passthrough summary opt-in preserves explicit display and provider boundaries", () => {
+  const cases = [
+    { type: "enabled", summarizeThinking: true, expected: "summarized" },
+    { type: "adaptive", summarizeThinking: true, expected: "summarized" },
+    { type: "auto", summarizeThinking: true, expected: "summarized" },
+    { type: "disabled", summarizeThinking: true, expected: undefined },
+    { type: "enabled", summarizeThinking: false, expected: undefined },
+    { type: "enabled", summarizeThinking: true, display: "omitted", expected: "omitted" },
+    { type: "enabled", summarizeThinking: true, display: "", expected: "summarized" },
+    { type: "enabled", summarizeThinking: true, provider: "minimax", expected: undefined },
+  ];
+  for (const fixture of cases) {
+    const thinking = {
+      type: fixture.type,
+      budget_tokens: 1024,
+      ...(fixture.display !== undefined ? { display: fixture.display } : {}),
+    };
+    const result = buildClaudePassthroughBody({
+      body: { messages: [{ role: "user", content: "Ping" }], thinking },
+      provider: fixture.provider ?? "claude",
+      clientHeaders: undefined,
+      isClaudeCodeSemanticPassthrough: false,
+      effectiveModel: "claude-sonnet-4-6",
+      targetFormat: "claude",
+      preserveCacheControl: false,
+      summarizeThinking: fixture.summarizeThinking,
+      normalizeClaudeUpstreamMessages: () => {},
+      applyReasoningRuleDirective: (body) => body,
+    });
+    assert.equal(result.thinking.display, fixture.expected, JSON.stringify(fixture));
+    assert.equal(result.thinking.budget_tokens, 1024);
+    assert.equal(thinking.display, fixture.display, "does not mutate client thinking config");
+  }
 });
 
 // Fix #2468: normalizeClaudeUpstreamMessages() now runs on the pure Claude passthrough
