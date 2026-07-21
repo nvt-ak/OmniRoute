@@ -31,6 +31,10 @@ import {
 import { getCombo, getComboForModel, getModelInfo } from "../services/model";
 import { stripContextWindowSuffix } from "@omniroute/open-sse/services/model.ts";
 import { resolveBareModelToConnectionDefault } from "@omniroute/open-sse/services/model.ts";
+import {
+  splitThinkingSuffix,
+  THINKING_SUFFIX_MARKER,
+} from "@omniroute/open-sse/handlers/chatCore/thinkingSuffixVariant.ts";
 import { errorResponse } from "@omniroute/open-sse/utils/error.ts";
 import { getImageModelEntry, isImageOnlyModel } from "@omniroute/open-sse/config/imageRegistry.ts";
 import { acceptHeaderForcesStream } from "@omniroute/open-sse/utils/aiSdkCompat.ts";
@@ -1017,6 +1021,20 @@ async function handleChatImplementation(
       );
       resolvedModelStr = wsRoute.model;
       body = { ...body, model: wsRoute.model };
+    }
+  }
+
+  // ── Thinking-suffix (Point 1): strip a `(high)`/`(auto)`/`(16384)` suffix off the
+  // model/pool name BEFORE combo/auto lookup (getComboByName matches exact names, so a
+  // suffixed pool name would miss its combo). The raw suffix is stashed on the body via
+  // THINKING_SUFFIX_MARKER and re-applied per-target in chatCore (Point 2), so every
+  // target in a pool — each possibly a different provider — gets its own thinking config.
+  {
+    const { baseModel, rawSuffix } = splitThinkingSuffix(resolvedModelStr);
+    if (rawSuffix) {
+      resolvedModelStr = baseModel;
+      body = { ...body, model: baseModel, [THINKING_SUFFIX_MARKER]: rawSuffix };
+      log.info("THINKING-SUFFIX", `stripped "(${rawSuffix})" → ${baseModel} (stashed for targets)`);
     }
   }
 
