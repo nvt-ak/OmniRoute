@@ -1,18 +1,19 @@
 /**
  * chatCore pure Claude → Claude passthrough request body (chatCore god-file decomposition, slice 2).
  *
- * Extracted byte-identically from handleChatCore's translation step (the `isClaudePassthrough`
+ * Extracted from handleChatCore's translation step (the `isClaudePassthrough`
  * branch). Forwards the client's Messages API body as-is without an OpenAI round-trip — the
  * Claude→OpenAI→Claude double translation was lossy and corrupted payloads at high context
  * (150+ msgs, 100+ tools; #1359). Claude Code sends well-formed Messages API payloads, so they are
  * trusted regardless of combo strategy or cache_control settings; only the Anthropic-specific
- * hygiene below is applied. Returns the body to dispatch. The reasoning-rule directive helper
- * (src/lib/reasoningRouting) is injected by the handler so this engine leaf takes no new
- * open-sse → src import edge.
+ * hygiene and connection-level summarized thinking display below are applied. Returns the body
+ * to dispatch. The reasoning-rule directive helper (src/lib/reasoningRouting) is injected by
+ * the handler so this engine leaf takes no new open-sse → src import edge.
  */
 
 import { shouldUseMidConversationSystem } from "../../executors/claudeIdentity.ts";
 import { ensureCacheControlOnLastUserMessage } from "../../services/claudeCodeConstraints.ts";
+import { applyClaudeCodeCompatibleThinkingDisplay } from "../../services/claudeCodeCompatibleThinkingDisplay.ts";
 import { hoistDeferredToolsForTarget } from "../../translator/helpers/claudeDeferredTools.ts";
 import { splitMisplacedToolResults } from "../../translator/helpers/claudeHelper.ts";
 import { FORMATS } from "../../translator/formats.ts";
@@ -39,6 +40,7 @@ export function buildClaudePassthroughBody({
   effectiveModel,
   targetFormat,
   preserveCacheControl,
+  summarizeThinking = false,
   normalizeClaudeUpstreamMessages,
   applyReasoningRuleDirective,
   log,
@@ -50,6 +52,7 @@ export function buildClaudePassthroughBody({
   effectiveModel: string;
   targetFormat: string;
   preserveCacheControl: boolean;
+  summarizeThinking?: boolean;
   normalizeClaudeUpstreamMessages: (
     payload: Record<string, unknown>,
     options?: { preserveToolResultBlocks?: boolean }
@@ -86,6 +89,19 @@ export function buildClaudePassthroughBody({
     ) as typeof translatedBody.messages;
 
     stripClaudeRejectedTopLevelFields(translatedBody, clientHeaders);
+
+    // The connection opt-in supplies a display only for active thinking; preserve
+    // explicit client display choices and leave third-party passthrough untouched.
+    const thinkingConfig = translatedBody.thinking;
+    if (summarizeThinking && thinkingConfig && typeof thinkingConfig === "object") {
+      const thinking = thinkingConfig as Record<string, unknown>;
+      const thinkingType = String(thinking.type ?? "").trim().toLowerCase();
+      if (thinkingType === "enabled" || thinkingType === "adaptive" || thinkingType === "auto") {
+        translatedBody.thinking = applyClaudeCodeCompatibleThinkingDisplay(thinking, {
+          summarizeThinking,
+        });
+      }
+    }
   }
 
   // Legacy models reject role:"system" messages. Supported models accept

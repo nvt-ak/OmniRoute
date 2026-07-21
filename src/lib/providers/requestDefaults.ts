@@ -109,6 +109,17 @@ export function normalizeRequestDefaults(
     }
   }
 
+  if (provider === "claude") {
+    const summarizeThinking = normalizeClaudeCodeCompatibleSummarizeThinking(
+      record.summarizeThinking
+    );
+    if (summarizeThinking) {
+      normalized.summarizeThinking = true;
+    } else {
+      delete normalized.summarizeThinking;
+    }
+  }
+
   if (isClaudeCodeCompatibleProvider(provider)) {
     const context1m = normalizeClaudeCodeCompatibleContext1m(record.context1m);
     if (context1m) {

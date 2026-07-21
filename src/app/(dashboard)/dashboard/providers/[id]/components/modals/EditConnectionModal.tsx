@@ -691,6 +691,13 @@ export default function EditConnectionModal({
         };
         if (isClaude) {
           Object.assign(updates.providerSpecificData, claudeConnectionFieldPatch(formData));
+          updates.providerSpecificData.requestDefaults = {
+            ...(typeof updates.providerSpecificData.requestDefaults === "object" &&
+            updates.providerSpecificData.requestDefaults
+              ? updates.providerSpecificData.requestDefaults
+              : {}),
+            ...(formData.ccCompatibleSummarizeThinking ? { summarizeThinking: true } : {}),
+          };
         }
         if (isCodex) {
           updates.providerSpecificData.allowPaidCredits = formData.allowPaidCredits;
@@ -843,11 +850,23 @@ export default function EditConnectionModal({
           />
         )}
         {isClaude && (
-          <ClaudeConnectionFields
-            values={formData}
-            showUsageWallOptions={isOAuth}
-            onChange={(patch) => setFormData({ ...formData, ...patch })}
-          />
+          <>
+            <ClaudeConnectionFields
+              values={formData}
+              showUsageWallOptions={isOAuth}
+              onChange={(patch) => setFormData({ ...formData, ...patch })}
+            />
+            <div className="flex flex-col gap-4 rounded-lg border border-border/50 bg-surface/20 p-4">
+              <Toggle
+                checked={formData.ccCompatibleSummarizeThinking}
+                onChange={(checked) =>
+                  setFormData({ ...formData, ccCompatibleSummarizeThinking: checked })
+                }
+                label={t("ccCompatibleSummarizeThinkingLabel")}
+                description={t("ccCompatibleSummarizeThinkingDescription")}
+              />
+            </div>
+          </>
         )}
         {(isCcCompatible || openRouterPreset.input) && (
           <div className="flex flex-col gap-4 rounded-lg border border-border bg-bg-subtle p-4">
