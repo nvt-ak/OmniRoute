@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { snapshotRowsToQuotas } from "../../src/lib/usage/providerLimits";
+import { snapshotRowsToQuotas, mergeReportCacheEntry } from "../../src/lib/usage/providerLimits";
 
 // Regression lock for the "Refresh now shows hours-old data" bug: the DB helper
 // getLatestQuotaSnapshotsForConnection runs rows through rowToCamel, so at
@@ -93,4 +93,35 @@ test("snapshotRowsToQuotas tracks the newest createdAt across rows", () => {
   const { newestMs } = snapshotRowsToQuotas(rows as never);
 
   assert.equal(newestMs, Date.parse("2026-07-08T15:35:12Z"));
+});
+
+// Regression lock for the "429'd account vanishes from usage.report" bug: when
+// the live in-cycle fetch returned error-only (no quotas), the report must fall
+// back to the persisted cache or the snapshot rather than dropping the account.
+const good = (label: string) =>
+  ({ quotas: { "session (5h)": { remaining: 64 } }, message: null, fetchedAt: label } as never);
+const errorOnly = { quotas: null, message: "429", fetchedAt: "in-cycle" } as never;
+
+test("mergeReportCacheEntry prefers the in-cycle entry when it has quota windows", () => {
+  const chosen = mergeReportCacheEntry(good("in-cycle"), good("persisted"), good("snapshot"));
+  assert.equal((chosen as { fetchedAt: string }).fetchedAt, "in-cycle");
+});
+
+test("mergeReportCacheEntry falls back to persisted cache when in-cycle is error-only (the Claude 429 case)", () => {
+  const chosen = mergeReportCacheEntry(errorOnly, good("persisted"), good("snapshot"));
+  assert.equal((chosen as { fetchedAt: string }).fetchedAt, "persisted");
+});
+
+test("mergeReportCacheEntry falls back to the snapshot when neither in-cycle nor persisted has windows", () => {
+  const chosen = mergeReportCacheEntry(errorOnly, undefined, good("snapshot"));
+  assert.equal((chosen as { fetchedAt: string }).fetchedAt, "snapshot");
+});
+
+test("mergeReportCacheEntry keeps the error-only in-cycle entry only as a last resort", () => {
+  const chosen = mergeReportCacheEntry(errorOnly, undefined, undefined);
+  assert.equal((chosen as { fetchedAt: string }).fetchedAt, "in-cycle");
+});
+
+test("mergeReportCacheEntry returns undefined when there is nothing to report", () => {
+  assert.equal(mergeReportCacheEntry(undefined, undefined, undefined), undefined);
 });

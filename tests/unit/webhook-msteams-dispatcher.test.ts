@@ -87,3 +87,88 @@ test("buildMsTeamsPayload — falls back to the event description when no struct
   const textBlocks = body.filter((el) => el.type === "TextBlock");
   assert.ok(textBlocks.length >= 1, "should include a descriptive TextBlock");
 });
+
+test("buildMsTeamsPayload — usage.report renders per-account quota, not the generic description", () => {
+  const data = {
+    intervalMinutes: 70,
+    accountCount: 2,
+    accounts: [
+      {
+        provider: "codex",
+        account: "me@example.com",
+        worstRemainingPct: 18,
+        windows: [
+          { name: "weekly", displayName: "Weekly", remainingPct: 18, unlimited: false },
+          { name: "session", displayName: "Session", remainingPct: 74, unlimited: false },
+        ],
+      },
+      {
+        provider: "claude",
+        account: "team@example.com",
+        worstRemainingPct: 88,
+        windows: [{ name: "session", displayName: "Session", remainingPct: 88, unlimited: false }],
+      },
+    ],
+  };
+  const payload = buildMsTeamsPayload("usage.report", data);
+  const combined = JSON.stringify(payload);
+
+  // Rich account/window data must be present — the whole point of this fix.
+  assert.ok(combined.includes("CODEX"), "must show the provider name");
+  assert.ok(combined.includes("me@example.com"), "must show the account");
+  assert.ok(combined.includes("Weekly"), "must show the window display name");
+  assert.ok(combined.includes("18%"), "must show the remaining percentage");
+  // It must NOT collapse to the generic event description.
+  assert.ok(
+    !combined.includes("Periodic OAuth quota summary"),
+    "must not fall back to the generic description when account data exists"
+  );
+  // ColumnSet rows carry the bar + %; they are nested inside per-account
+  // Containers, so assert the serialized card contains at least one.
+  assert.ok(combined.includes('"ColumnSet"'), "depleting windows must render as ColumnSet rows");
+});
+
+test("buildMsTeamsPayload — usage.report with no accounts still yields a valid card", () => {
+  const payload = buildMsTeamsPayload("usage.report", { intervalMinutes: 70, accounts: [] });
+  const body = payload.attachments[0].content.body;
+  assert.ok(body.length >= 1, "must have a non-empty body");
+  const combined = JSON.stringify(payload);
+  assert.ok(combined.includes("No accounts"), "empty state must be shown");
+});
+
+test("buildMsTeamsPayload — combo.switched shows from/to providers, not the generic description", () => {
+  const payload = buildMsTeamsPayload("combo.switched", {
+    combo: "always-on",
+    fromProvider: "codex",
+    fromTier: "premium",
+    toProvider: "glm",
+    toModel: "glm/glm-5.1",
+    toTier: "cheap",
+  });
+  const combined = JSON.stringify(payload);
+  assert.ok(combined.includes("CODEX"), "must show the from provider");
+  assert.ok(combined.includes("GLM"), "must show the to provider");
+  assert.ok(combined.includes("glm/glm-5.1"), "must show the model now serving");
+  assert.ok(combined.includes("always-on"), "must show the combo name");
+});
+
+test("buildMsTeamsPayload — usage.report stays well under the 28KB Teams limit", () => {
+  // A pathological report: many accounts, each with many windows.
+  const accounts = Array.from({ length: 30 }, (_, i) => ({
+    provider: `provider-${i}`,
+    account: `account-${i}@example.com`,
+    worstRemainingPct: 5,
+    windows: Array.from({ length: 8 }, (_, j) => ({
+      name: `window-${j}`,
+      displayName: `Window ${j}`,
+      remainingPct: (j * 11) % 100,
+      unlimited: false,
+    })),
+  }));
+  const payload = buildMsTeamsPayload("usage.report", { intervalMinutes: 70, accounts });
+  const serialized = JSON.stringify(payload);
+  assert.ok(
+    serialized.length < 28_000,
+    `payload must stay under the 28KB Teams limit, got ${serialized.length}`
+  );
+});

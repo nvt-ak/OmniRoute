@@ -4,12 +4,15 @@ import { strict as assert } from "node:assert";
 import {
   OAUTH_USAGE_429_COOLDOWN_MS,
   OAUTH_USAGE_429_MAX_COOLDOWN_MS,
+  DEFAULT_OAUTH_USAGE_MIN_INTERVAL_MS,
   _claudeOauthUsageCooldownKeysForTest,
   _resetClaudeOauthUsageCooldown,
   computeClaudeUsageRetryMs,
   hashClaudeCredential,
   isClaudeOauthUsageCoolingDown,
   markClaudeOauthUsage429,
+  isClaudeUsageFetchTooSoon,
+  markClaudeUsageFetchAttempt,
 } from "../../open-sse/services/claudeUsageCooldown.ts";
 
 describe("claude OAuth usage 429 backoff", () => {
@@ -145,5 +148,41 @@ describe("claude OAuth usage cooldown — credential hygiene", () => {
     assert.equal(keys.includes("sk-ant-oat01-raw-secret-token"), false);
     assert.equal(keys[0], hashClaudeCredential("sk-ant-oat01-raw-secret-token"));
     assert.match(keys[0], /^[0-9a-f]{64}$/);
+  });
+});
+
+describe("claude OAuth usage proactive min-interval gate", () => {
+  beforeEach(() => {
+    _resetClaudeOauthUsageCooldown();
+  });
+
+  it("min-interval defaults to 5 minutes", () => {
+    assert.equal(DEFAULT_OAUTH_USAGE_MIN_INTERVAL_MS, 300_000);
+  });
+
+  it("first fetch is never too soon (no prior attempt recorded)", () => {
+    assert.equal(isClaudeUsageFetchTooSoon("tok-a", 1_000_000), false);
+    assert.equal(isClaudeUsageFetchTooSoon(undefined, 1_000_000), false);
+  });
+
+  it("a second fetch within the interval is blocked, per token", () => {
+    const t0 = 1_000_000;
+    markClaudeUsageFetchAttempt("tok-a", t0);
+    assert.equal(isClaudeUsageFetchTooSoon("tok-a", t0 + 60_000, 300_000), true);
+    // A different token is unaffected — the gate is per-token.
+    assert.equal(isClaudeUsageFetchTooSoon("tok-b", t0 + 60_000, 300_000), false);
+  });
+
+  it("a fetch after the interval elapses is allowed again", () => {
+    const t0 = 2_000_000;
+    markClaudeUsageFetchAttempt("tok-a", t0);
+    assert.equal(isClaudeUsageFetchTooSoon("tok-a", t0 + 299_999, 300_000), true);
+    assert.equal(isClaudeUsageFetchTooSoon("tok-a", t0 + 300_001, 300_000), false);
+  });
+
+  it("minIntervalMs=0 disables the gate entirely", () => {
+    const t0 = 3_000_000;
+    markClaudeUsageFetchAttempt("tok-a", t0);
+    assert.equal(isClaudeUsageFetchTooSoon("tok-a", t0 + 1, 0), false);
   });
 });

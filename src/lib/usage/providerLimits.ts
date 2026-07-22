@@ -1423,12 +1423,49 @@ function buildUsageReportData(
   };
 }
 
+function entryHasQuotaWindows(entry: ProviderLimitsCacheEntry | undefined | null): boolean {
+  return !!entry?.quotas && Object.keys(entry.quotas).length > 0;
+}
+
+// Pure best-of selection for one connection's report entry. Prefer a live
+// in-cycle result that actually carries quota windows, else the persisted cache
+// (only if it has windows), else the freshest quota_snapshots row, else the
+// in-cycle entry as-is. This is why a Claude account whose live poll returned 429
+// (error-only, no quotas) this cycle still appears with its last-good quota
+// instead of vanishing from the report. Exported for unit testing.
+export function mergeReportCacheEntry(
+  inCycle: ProviderLimitsCacheEntry | undefined | null,
+  persisted: ProviderLimitsCacheEntry | undefined | null,
+  snapshot: ProviderLimitsCacheEntry | undefined | null
+): ProviderLimitsCacheEntry | undefined {
+  if (entryHasQuotaWindows(inCycle)) return inCycle as ProviderLimitsCacheEntry;
+  if (entryHasQuotaWindows(persisted)) return persisted as ProviderLimitsCacheEntry;
+  return snapshot ?? inCycle ?? undefined;
+}
+
+function resolveReportCaches(
+  connections: ProviderConnectionLike[],
+  inCycle?: Record<string, ProviderLimitsCacheEntry>
+): Record<string, ProviderLimitsCacheEntry> {
+  const liveCaches = getCachedProviderLimitsMap();
+  const resolved: Record<string, ProviderLimitsCacheEntry> = {};
+  for (const conn of connections) {
+    const entry = mergeReportCacheEntry(
+      inCycle?.[conn.id],
+      liveCaches[conn.id],
+      snapshotCacheEntry(conn.id, null)
+    );
+    if (entry) resolved[conn.id] = entry;
+  }
+  return resolved;
+}
+
 function emitScheduledUsageReport(
   connections: ProviderConnectionLike[],
   caches: Record<string, ProviderLimitsCacheEntry>
 ): void {
   try {
-    const report = buildUsageReportData(connections, caches);
+    const report = buildUsageReportData(connections, resolveReportCaches(connections, caches));
     if (report.accountCount === 0) return;
 
     import("@/lib/webhookDispatcher")
@@ -1453,12 +1490,6 @@ export async function buildUsageReportFromCache(): Promise<UsageReportData | nul
   ).filter(isSupportedUsageConnection);
   if (connections.length === 0) return null;
 
-  const liveCaches = getCachedProviderLimitsMap();
-  const caches: Record<string, ProviderLimitsCacheEntry> = {};
-  for (const conn of connections) {
-    const cached = liveCaches[conn.id] ?? snapshotCacheEntry(conn.id, null) ?? undefined;
-    if (cached) caches[conn.id] = cached;
-  }
-  const report = buildUsageReportData(connections, caches);
+  const report = buildUsageReportData(connections, resolveReportCaches(connections));
   return report.accountCount === 0 ? null : report;
 }
