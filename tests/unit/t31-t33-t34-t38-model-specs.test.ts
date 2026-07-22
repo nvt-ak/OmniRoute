@@ -9,6 +9,8 @@ const { normalizeThinkingLevel } = await import("../../open-sse/services/thinkin
 const {
   MODEL_SPECS,
   getModelSpec,
+  getCanonicalModelSpecId,
+  isAdaptiveThinkingOnly,
   capMaxOutputTokens,
   resolveModelAlias,
   getDefaultThinkingBudget,
@@ -158,4 +160,31 @@ test("opencode-go family: capMaxOutputTokens grants full upstream budget", () =>
   assert.equal(capMaxOutputTokens("MiniMax-M2.5", 200000), 131072);
   assert.equal(capMaxOutputTokens("deepseek-v4-pro", 500000), 384000);
   assert.equal(capMaxOutputTokens("hy3-preview", 300000), 262144);
+});
+
+test("provider-routing-prefixed ids resolve to the bare canonical spec", () => {
+  // Combo targets carry a "<provider>/" routing prefix that reaches getModelSpec
+  // at translate time (before the prefix is stripped for the upstream body). The
+  // resolver must see through the prefix so adaptive-only detection works.
+  assert.equal(getCanonicalModelSpecId("claude/claude-opus-4-8"), "claude-opus-4-8");
+  assert.equal(getCanonicalModelSpecId("cc/claude-opus-4-8"), "claude-opus-4-8");
+  assert.equal(getCanonicalModelSpecId("antigravity/claude-sonnet-4-6"), "claude-sonnet-4-6");
+  assert.equal(getCanonicalModelSpecId("claude/claude-sonnet-5"), "claude-sonnet-5");
+});
+
+test("adaptive-only detection survives a provider routing prefix", () => {
+  // Root cause of thinking_tokens:0 — the translator called isAdaptiveThinkingOnly
+  // with the prefixed combo-target id and got false, taking the wrong (enabled)
+  // branch. All three forms must agree now.
+  assert.equal(isAdaptiveThinkingOnly("claude-opus-4-8"), true);
+  assert.equal(isAdaptiveThinkingOnly("claude/claude-opus-4-8"), true);
+  assert.equal(isAdaptiveThinkingOnly("claude-opus-4-8[high]"), true);
+});
+
+test("prefix strip never overrides an existing bare match and terminates", () => {
+  // Bare ids keep resolving as before (append-only guarantee), and an id with no
+  // registry match still returns null after the strip (no infinite recursion).
+  assert.equal(getCanonicalModelSpecId("claude-opus-4-8"), "claude-opus-4-8");
+  assert.equal(getCanonicalModelSpecId("totally-unknown-model"), null);
+  assert.equal(getCanonicalModelSpecId("unknown/also-unknown"), null);
 });

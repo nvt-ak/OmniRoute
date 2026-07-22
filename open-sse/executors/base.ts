@@ -1142,9 +1142,17 @@ export class BaseExecutor {
               delete tb.output_config;
               delete tb.context_management;
             } else if (tbMode === ThinkingMode.AUTO) {
-              delete tb.thinking;
-              delete tb.context_management;
-              delete tb.output_config;
+              // #5312: AUTO = "strip, let the provider decide" — but only for
+              // DEFAULT injection. If the client / an upstream translator (e.g. a
+              // reasoning_effort field, or the pool-*[high] thinking suffix) already
+              // supplied a valid thinking block, preserve it (an enabled block is
+              // remapped to adaptive below). Mirror the sibling default-injection
+              // guard so an orphan output_config (effort without thinking, which is
+              // meaningless to Anthropic) is still stripped.
+              if (tb.thinking === undefined && tb.output_config === undefined) {
+                delete tb.context_management;
+                delete tb.output_config;
+              }
             } else if (tb.thinking === undefined && tb.output_config === undefined) {
               tb.thinking = { type: "adaptive" };
               tb.context_management = {
