@@ -95,13 +95,30 @@ export function applyThinkingSuffixVariant(opts: {
   const baseModel = stripThinkingSuffix(effectiveModel);
   const modelWithSuffix = `${baseModel}[${rawSuffix}]`;
 
-  const before = JSON.stringify(bodyObj.thinking ?? null);
+  const srcFmt = (sourceFormat ?? "").trim().toLowerCase();
+  const tgtFmt = (targetFormat ?? "").trim().toLowerCase();
+
+  // When the request will be translated downstream (sourceFormat !== targetFormat,
+  // e.g. an OpenAI-compatible client hitting a Claude provider), the body here is
+  // still in SOURCE format. Applying target-format thinking now (Claude
+  // `thinking`/`output_config`) is wrong: translateRequest() rebuilds the body from
+  // the source shape and only carries source-native reasoning signals, silently
+  // dropping the Claude fields we set — so effort never reaches Claude
+  // (`output_tokens_details.thinking_tokens: 0`). Instead, apply thinking in SOURCE
+  // format so it lands on a field the translator understands (OpenAI →
+  // `reasoning_effort`, Codex/xAI → `reasoning.effort`); the OpenAI→Claude translator
+  // then produces the correct adaptive `thinking` + `output_config.effort` for the
+  // target model. Passthrough (source === target, no translation) keeps applying in
+  // target format directly.
+  const applyFormat = srcFmt && tgtFmt && srcFmt !== tgtFmt ? srcFmt : tgtFmt;
+
+  const before = JSON.stringify(bodyObj.thinking ?? bodyObj.reasoning_effort ?? null);
   const updated = applyThinking(
     bodyObj,
     modelWithSuffix,
     sourceFormat,
-    targetFormat,
-    opts.provider ?? targetFormat
+    applyFormat,
+    applyFormat
   );
 
   // Copy applyThinking's result back into the same body object (mutate in place),
@@ -115,10 +132,10 @@ export function applyThinkingSuffixVariant(opts: {
   effectiveModel = baseModel;
   bodyObj.model = baseModel;
 
-  const after = JSON.stringify(bodyObj.thinking ?? null);
+  const after = JSON.stringify(bodyObj.thinking ?? bodyObj.reasoning_effort ?? null);
   const log =
     before === after
       ? null
-      : `Thinking suffix: [${rawSuffix}] → ${baseModel} (${targetFormat}) thinking=${after}`;
+      : `Thinking suffix: [${rawSuffix}] → ${baseModel} (apply=${applyFormat}) signal=${after}`;
   return { effectiveModel, log };
 }

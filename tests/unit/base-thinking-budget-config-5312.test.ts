@@ -114,3 +114,36 @@ test("#5312 RC-B: custom-budget enabled block is remapped to adaptive (Opus 4.8 
     "8192 budget maps to medium effort"
   );
 });
+
+test("mode=auto PRESERVES a client/translator-supplied adaptive block (thinking-suffix bug)", async () => {
+  setThinkingBudgetConfig({ mode: "auto" });
+  const upstream = await captureUpstreamBody({
+    messages: [{ role: "user", content: "hi" }],
+    thinking: { type: "adaptive" },
+    output_config: { effort: "high" },
+  });
+  assert.deepEqual(
+    upstream.thinking,
+    { type: "adaptive" },
+    "auto must not strip a supplied adaptive block (pool-*[high] suffix / reasoning_effort)"
+  );
+  assert.deepEqual(
+    upstream.output_config,
+    { effort: "high" },
+    "supplied effort survives auto mode"
+  );
+});
+
+test("mode=auto remaps a supplied enabled block to adaptive instead of stripping it", async () => {
+  setThinkingBudgetConfig({ mode: "auto" });
+  const upstream = await captureUpstreamBody({
+    messages: [{ role: "user", content: "hi" }],
+    thinking: { type: "enabled", budget_tokens: 8192 },
+  });
+  assert.deepEqual(
+    upstream.thinking,
+    { type: "adaptive" },
+    "auto preserves the supplied block; the enabled->adaptive remap then fires (auto !== passthrough)"
+  );
+  assert.deepEqual(upstream.output_config, { effort: "medium" }, "8192 budget maps to medium effort");
+});

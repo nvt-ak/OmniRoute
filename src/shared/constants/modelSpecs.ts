@@ -1059,6 +1059,16 @@ export function getCanonicalModelSpecId(
     if (lower.startsWith(lowerKey)) return canonical;
   }
 
+  // Provider-routing-prefixed ids ("claude/claude-opus-4-8", "cc/...", "antigravity/...",
+  // "publishers/google/models/..."): the leading "<provider>/" segment defeats the
+  // startsWith rule above, so strip the FIRST segment and retry recursively. Reached
+  // only after all direct rules miss, so it can only ADD resolution, never override.
+  // No canonical MODEL_SPECS key contains "/".
+  const slash = modelId.indexOf("/");
+  if (slash > 0 && slash < modelId.length - 1) {
+    return getCanonicalModelSpecId(modelId.slice(slash + 1));
+  }
+
   return null;
 }
 
