@@ -18,7 +18,9 @@ import {
   computeClaudeUsageRetryMs,
   hashClaudeCredential,
   isClaudeOauthUsageCoolingDown,
+  isClaudeUsageFetchTooSoon,
   markClaudeOauthUsage429,
+  markClaudeUsageFetchAttempt,
 } from "../claudeUsageCooldown.ts";
 import { boundedMap } from "../../../src/lib/quota/boundedMap.ts";
 import { sanitizeErrorMessage } from "../../utils/errorSanitization.ts";
@@ -186,6 +188,14 @@ async function fetchClaudeUsage(
 
   // Refresh bootstrap in parallel; best-effort, failure non-fatal.
   const bootstrapPromise = fetchClaudeBootstrap(accessToken).catch(() => null);
+  // Proactive min-interval gate: the previous poll for this token was too recent.
+  // Serve the last known quota (flagged stale) instead of hitting the endpoint again.
+  if (isClaudeUsageFetchTooSoon(accessToken)) {
+    const cached = lastSuccessfulUsage.get(key);
+    if (cached) return staleFromCache(cached);
+    return { message: RATE_LIMITED_MESSAGE, bootstrap: await bootstrapPromise };
+  }
+  markClaudeUsageFetchAttempt(accessToken);
   try {
     // Real CLI uses axios here, not Stainless — UA is `claude-code/<version>`
     // (not `claude-cli/...`) and the shape is simpler than /v1/messages.

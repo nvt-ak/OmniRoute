@@ -28,7 +28,20 @@ export const OAUTH_USAGE_429_MAX_COOLDOWN_MS = 30 * 60_000; // 30 minutes (ceili
 /** Largest valid JS Date value (ms) — anything above is a garbage header. */
 const MAX_DATE_MS = 8.64e15;
 
+// Proactive floor between two OAuth-usage polls for the SAME token. The reactive
+// 429 cooldown above only kicks in AFTER Anthropic rejects a poll; under heavy
+// chat the post-stream usage sync + dashboard auto-refresh + combo health tick can
+// each fire a live poll within seconds, so we also gate BEFORE the request. Default
+// 5 min, override via CLAUDE_OAUTH_USAGE_MIN_INTERVAL_MS (0 disables the gate).
+export const DEFAULT_OAUTH_USAGE_MIN_INTERVAL_MS = 300_000;
+
+export function getClaudeOauthUsageMinIntervalMs(): number {
+  const raw = Number(process.env.CLAUDE_OAUTH_USAGE_MIN_INTERVAL_MS ?? "");
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_OAUTH_USAGE_MIN_INTERVAL_MS;
+}
+
 const oauthCooldown = new Map<string, number>();
+const lastUsageFetchAt = new Map<string, number>();
 
 /** Stable, non-reversible map key for a credential. */
 export function hashClaudeCredential(accessToken: string): string {
@@ -112,9 +125,28 @@ export function computeClaudeUsageRetryMs(
   );
 }
 
+export function isClaudeUsageFetchTooSoon(
+  accessToken: string | undefined,
+  now: number = Date.now(),
+  minIntervalMs: number = getClaudeOauthUsageMinIntervalMs()
+): boolean {
+  if (!accessToken || minIntervalMs <= 0) return false;
+  const last = lastUsageFetchAt.get(hashClaudeCredential(accessToken));
+  return last !== undefined && now - last < minIntervalMs;
+}
+
+export function markClaudeUsageFetchAttempt(
+  accessToken: string | undefined,
+  now: number = Date.now()
+): void {
+  if (!accessToken) return;
+  lastUsageFetchAt.set(hashClaudeCredential(accessToken), now);
+}
+
 /** Test-only: clear all entries. */
 export function _resetClaudeOauthUsageCooldown(): void {
   oauthCooldown.clear();
+  lastUsageFetchAt.clear();
 }
 
 /** Test-only: the current map keys (hashed credentials). */
