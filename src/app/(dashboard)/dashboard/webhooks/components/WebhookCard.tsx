@@ -73,25 +73,34 @@ export function WebhookCard({
 
   return (
     <div className="rounded-xl border border-border bg-surface">
-      <div className="flex items-center gap-3 p-4">
-        <Icon
-          name={KIND_ICONS[webhook.kind]}
-          size={22}
-          className={`shrink-0 ${KIND_COLORS[webhook.kind]}`}
-        />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-text-main">
-            {webhook.description || t("unnamedWebhook")}
-          </p>
-          <p className="truncate text-xs text-text-muted">{webhook.url}</p>
+      <div className="flex min-w-0 flex-col gap-3 p-4 sm:flex-row sm:items-center">
+        <div className="flex min-w-0 flex-1 basis-0 items-center gap-3">
+          <Icon
+            name={KIND_ICONS[webhook.kind]}
+            size={22}
+            className={`shrink-0 ${KIND_COLORS[webhook.kind]}`}
+          />
+          <div className="min-w-0 flex-1">
+            <p
+              className="truncate text-sm font-semibold text-text-main"
+              title={webhook.description || t("unnamedWebhook")}
+            >
+              <span aria-hidden="true">{webhook.description || t("unnamedWebhook")}</span>
+              <span className="sr-only">{webhook.description || t("unnamedWebhook")}</span>
+            </p>
+            <p className="truncate text-xs text-text-muted" title={webhook.url}>
+              <span aria-hidden="true">{webhook.url}</span>
+              <span className="sr-only">{webhook.url}</span>
+            </p>
+          </div>
+          <Badge
+            className="shrink-0"
+            variant={status === "active" ? "success" : status === "errored" ? "error" : "default"}
+          >
+            {t(status)}
+          </Badge>
         </div>
-        <Badge
-          className="shrink-0"
-          variant={status === "active" ? "success" : status === "errored" ? "error" : "default"}
-        >
-          {t(status)}
-        </Badge>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 flex-wrap items-center gap-1 sm:ml-auto sm:justify-end">
           <Button
             variant="ghost"
             size="icon"
