@@ -5,15 +5,16 @@ name: Build npm artifact (fork)
 # → Server wget link PUBLIC (repo public, không cần token):
 #     https://github.com/phonex34/OmniRoute/releases/download/build-latest/omniroute.tgz
 #
-# Trigger: MANUAL ONLY. Actions tab → Run workflow → chọn ref (mặc định fix/cache).
+# Trigger: MANUAL ONLY. Actions tab → "Use workflow from" chọn branch → Run workflow.
+# Để trống ô `ref` để build ĐÚNG branch đã chọn. Nếu điền `ref` thì nó ghi đè.
 
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Branch/tag/commit để build"
+        description: "Branch/tag/commit để build. ĐỂ TRỐNG để build đúng branch đã chọn ở 'Use workflow from'."
         required: false
-        default: "fix/cache"
+        default: ""
       clean:
         description: "Clean build — bỏ Next cache (bật khi nghi cache lỗi)"
         type: boolean
@@ -30,7 +31,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref }}
+          # Empty input → checkout falls back to the ref selected in
+          # "Use workflow from" (github.ref). A non-empty input overrides it.
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Resolve built commit
+        id: sha
+        run: |
+          set -euo pipefail
+          FULL=$(git rev-parse HEAD)
+          SHORT=$(git rev-parse --short HEAD)
+          echo "full=$FULL" >> "$GITHUB_OUTPUT"
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+          echo "Building from commit $SHORT ($FULL) on ref '${{ github.event.inputs.ref || github.ref }}'"
 
       - name: Setup Node 24
         uses: actions/setup-node@v4
@@ -46,7 +59,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build/next/cache
-          key: next-${{ hashFiles('package-lock.json') }}-${{ github.event.inputs.ref }}
+          key: next-${{ hashFiles('package-lock.json') }}-${{ steps.sha.outputs.short }}
           restore-keys: next-
 
       - name: Build + pack
@@ -54,7 +67,12 @@ jobs:
           OMNIROUTE_SKIP_DOCS: "1"
           OMNIROUTE_USE_TURBOPACK: "0"
           OMNIROUTE_MITM_STUB: "1"
-          NODE_OPTIONS: "--max-old-space-size=4096"
+          # next build (webpack production pass) peaks ~3.9 GB and OOM'd at the old
+          # 4096 ceiling — build-next-isolated.mjs wants 8 GB by default but RESPECTS an
+          # existing --max-old-space-size, so a low value here caps the spawned child too.
+          # ubuntu-latest has ~16 GB, so 8192 is safe. (#6409: this only bounds V8 heap,
+          # not Turbopack native mem — OMNIROUTE_USE_TURBOPACK=0 above keeps us on webpack.)
+          NODE_OPTIONS: "--max-old-space-size=8192"
         run: |
           set -euo pipefail
           if [ "${{ github.event.inputs.clean }}" = "true" ]; then
@@ -66,11 +84,35 @@ jobs:
           mv "$FILE" omniroute.tgz
           echo "Packed omniroute.tgz ($(du -h omniroute.tgz | cut -f1)) from $FILE"
 
-      - name: Publish to Release (tag build-latest)
+      - name: Verify tarball matches built commit
+        run: |
+          set -euo pipefail
+          PACKED_SHA=$(tar xzO -f omniroute.tgz package/dist/BUILD_SHA 2>/dev/null || true)
+          echo "Tarball BUILD_SHA=[$PACKED_SHA] expected=[${{ steps.sha.outputs.short }}]"
+          if [ "$PACKED_SHA" != "${{ steps.sha.outputs.short }}" ]; then
+            echo "::error::Tarball BUILD_SHA ($PACKED_SHA) != built commit (${{ steps.sha.outputs.short }}). Aborting release."
+            exit 1
+          fi
+
+      # Per-commit release: keeps history (one release per commit SHA) so older
+      # builds stay downloadable and each release URL maps 1:1 to a commit.
+      - name: Publish per-commit Release (tag build-${{ steps.sha.outputs.short }})
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ steps.sha.outputs.short }}
+          target_commitish: ${{ steps.sha.outputs.full }}
+          name: "OmniRoute fork build ${{ steps.sha.outputs.short }}"
+          body: "Built from `${{ github.event.inputs.ref || github.ref }}` at commit `${{ steps.sha.outputs.full }}`"
+          files: omniroute.tgz
+          make_latest: "false"
+
+      # Stable pointer: server wget URL stays constant at build-latest/omniroute.tgz.
+      - name: Update stable Release (tag build-latest)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-latest
-          name: "OmniRoute fork build (latest)"
-          body: "Built from `${{ github.event.inputs.ref }}` at ${{ github.sha }}"
+          target_commitish: ${{ steps.sha.outputs.full }}
+          name: "OmniRoute fork build (latest → ${{ steps.sha.outputs.short }})"
+          body: "Built from `${{ github.event.inputs.ref || github.ref }}` at commit `${{ steps.sha.outputs.full }}`"
           files: omniroute.tgz
           make_latest: "true"
