@@ -18,12 +18,26 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "react-dom"
         update-types: ["version-update:semver-major"]
+      # next is pinned to an exact minor (~16.3.x) in package.json. The published
+      # CLI ships a standalone dist/server.js whose nextConfig is baked at BUILD
+      # time and replayed verbatim at runtime (loadConfig short-circuits on
+      # __NEXT_PRIVATE_STANDALONE_CONFIG, skipping assignDefaults/finalizeConfig).
+      # A next MINOR that adds a new required config key therefore crashes every
+      # end-user install that resolved a newer next than the build did: 16.3.0
+      # added experimental.instantInsights and base-server.js dereferenced it
+      # unguarded -> "Cannot read properties of undefined (reading
+      # 'validationLevel')" on boot under the previous ^16.2.11 range. Minors must
+      # be adopted deliberately: bump next AND eslint-config-next together, rebuild
+      # the standalone artifact (npm run build:release) so the new config key is
+      # baked in, and re-run check:pack-boot. Never widen the range without that.
       - dependency-name: "next"
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "eslint"
         update-types: ["version-update:semver-major"]
+      # kept in lockstep with next: eslint-config-next ships next's own lint rules
+      # and is pinned exactly, so it moves in the same deliberate bump as above.
       - dependency-name: "eslint-config-next"
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       # typescript majors are peer-blocked by typescript-eslint, which pins a hard
       # upper bound (8.64.0 → peerDependencies.typescript ">=4.8.4 <6.1.0"). A TS 7
       # bump therefore violates the peer and takes down the whole toolchain at once —
