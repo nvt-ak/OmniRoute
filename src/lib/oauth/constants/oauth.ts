@@ -415,7 +415,8 @@ export const KIRO_CONFIG = {
 // Cursor stores credentials in SQLite database: state.vscdb
 // Keys: cursorAuth/accessToken, cursorAuth/refreshToken, storage.serviceMachineId
 // Deep-control PKCE + refresh aligned with OpenCodex (lidge-jun/opencodex src/oauth/cursor.ts).
-// clientVersion pin lives in open-sse/utils/cursorAgentCliVersionPin.ts — single source of truth.
+// clientVersion pin lives in open-sse/utils/cursorAgentCliVersionPin.ts — single
+// source of truth, import-free so this client-reachable module stays bundle-safe.
 export const CURSOR_CONFIG = {
   // API endpoints
   apiEndpoint: "https://api2.cursor.sh",

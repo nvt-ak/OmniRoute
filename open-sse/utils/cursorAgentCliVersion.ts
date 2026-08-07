@@ -21,6 +21,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { CURSOR_AGENT_CLI_VERSION } from "./cursorAgentCliVersionPin.ts";
 
+// The pin lives in utils/cursorAgentCliVersionPin.ts, an import-free module, so
+// client-reachable code (oauth.ts) can read it without dragging this file's
+// node:fs/os/path imports into the browser bundle.
+// Re-exported here so existing importers keep working.
 export { CURSOR_AGENT_CLI_VERSION };
 
 const VERSION_ID_RE = /^\d{4}\.\d{2}\.\d{2}-[0-9a-f]+$/;

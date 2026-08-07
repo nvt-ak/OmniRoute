@@ -9,7 +9,7 @@
  * short-circuit as originally shipped checked `activeProviders?.has("opencode")`
  * literally. `getActiveProviderSet()` canonicalizes every connection's
  * provider id through `resolveProviderAlias()`, and a manual override in
- * `open-sse/services/model.ts` (`ALIAS_TO_PROVIDER_ID["opencode"] =
+ * `open-sse/services/providerAlias.ts` (`ALIAS_TO_PROVIDER_ID["opencode"] =
  * "opencode-zen"`) rewrites any "opencode" id to "opencode-zen" before it
  * ever reaches the active set — so a real active no-auth "opencode"
  * connection NEVER appears as "opencode" in `activeProviders`, making the

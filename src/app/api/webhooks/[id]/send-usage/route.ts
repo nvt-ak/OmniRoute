@@ -8,16 +8,17 @@
 
 import { NextResponse } from "next/server";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
-import { getWebhook } from "@/lib/localDb";
+import { getWebhook, recordWebhookDelivery } from "@/lib/db/webhooks";
 import { decryptMetadata } from "@/lib/webhookDispatcher";
 import { buildSlackPayload } from "@/lib/webhooks/integrations/slack";
 import { buildTelegramUrl, buildTelegramPayload } from "@/lib/webhooks/integrations/telegram";
 import { buildDiscordPayload } from "@/lib/webhooks/integrations/discord";
+import { buildMsTeamsPayload } from "@/lib/webhooks/integrations/msteams";
 import { buildUsageReportFromCache } from "@/lib/usage/providerLimits";
 import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import { insertDelivery } from "@/lib/db/webhookDeliveries";
-import { recordWebhookDelivery } from "@/lib/localDb";
-import { parseAndValidateWebhookUrl, isPrivateHost } from "@/shared/network/outboundUrlGuard";
+import { isPrivateHost } from "@/shared/network/outboundUrlGuard";
+import { parseAndValidateWebhookUrl } from "@/shared/network/outboundUrlGuardPolicy";
 import crypto from "crypto";
 
 const MAX_RESPONSE_BODY = 2048;
@@ -107,10 +108,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const extraHeaders: Record<string, string> = {};
 
     if (kind === "slack") {
-      payloadSent = buildSlackPayload(EVENT, data) as Record<string, unknown>;
+      payloadSent = buildSlackPayload(EVENT, data) as unknown as Record<string, unknown>;
       fetchUrl = webhook.url;
     } else if (kind === "discord") {
-      payloadSent = buildDiscordPayload(EVENT, data) as Record<string, unknown>;
+      payloadSent = buildDiscordPayload(EVENT, data) as unknown as Record<string, unknown>;
+      fetchUrl = webhook.url;
+    } else if (kind === "msteams") {
+      payloadSent = buildMsTeamsPayload(EVENT, data) as unknown as Record<string, unknown>;
       fetchUrl = webhook.url;
     } else if (kind === "telegram") {
       const meta = decryptMetadata(webhook.metadata_encrypted ?? null);
@@ -119,7 +123,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         return NextResponse.json({ error: "Missing Telegram botToken" }, { status: 422 });
       }
       fetchUrl = buildTelegramUrl(botToken);
-      payloadSent = buildTelegramPayload(EVENT, data, webhook.url) as Record<string, unknown>;
+      payloadSent = buildTelegramPayload(EVENT, data, webhook.url) as unknown as Record<
+        string,
+        unknown
+      >;
     } else {
       payloadSent = payload as Record<string, unknown>;
       fetchUrl = webhook.url;
