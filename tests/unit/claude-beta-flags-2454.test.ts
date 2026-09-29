@@ -67,3 +67,46 @@ test("#2454 explicit model arg overrides body.model for tiering", () => {
   const flags = selectBetaFlags(fullAgentBody("claude-sonnet-4-6"), "claude-haiku-4-5-20251001");
   assert.ok(!flags.includes("context-1m-2025-08-07"));
 });
+
+// OAuth's captured redact beta is retained by default, even when a negotiated
+// client omits it. Readable thinking requires the release's explicit opt-in.
+test("negotiated client without redact-thinking retains the default OAuth fingerprint", () => {
+  const flags = selectBetaFlags(
+    fullAgentBody("claude-opus-5-5"),
+    null,
+    "effort-2025-11-24,context-management-2025-06-27,interleaved-thinking-2025-05-14"
+  ).split(",");
+  assert.ok(flags.includes("interleaved-thinking-2025-05-14"));
+  assert.ok(flags.includes("redact-thinking-2026-02-12"));
+});
+
+test("negotiated client that asks for redact-thinking still gets it", () => {
+  const flags = selectBetaFlags(
+    fullAgentBody("claude-opus-5-5"),
+    null,
+    "interleaved-thinking-2025-05-14,redact-thinking-2026-02-12"
+  ).split(",");
+  assert.ok(flags.includes("redact-thinking-2026-02-12"));
+});
+
+test("OAuth readable-thinking opt-in suppresses only unnegotiated redact-thinking", () => {
+  const key = "CLAUDE_OAUTH_SUMMARIZED_THINKING_UNREDACTED";
+  const previous = process.env[key];
+  process.env[key] = "true";
+  try {
+    const body = {
+      ...fullAgentBody("claude-opus-5-5"),
+      thinking: { type: "adaptive", display: "summarized" },
+    };
+    const interleaved = "interleaved-thinking-2025-05-14";
+    const redact = "redact-thinking-2026-02-12";
+    const visibleFlags = selectBetaFlags(body, null, interleaved).split(",");
+    assert.ok(visibleFlags.includes(interleaved));
+    assert.ok(!visibleFlags.includes(redact));
+    const redactedFlags = selectBetaFlags(body, null, `${interleaved},${redact}`).split(",");
+    assert.ok(redactedFlags.includes(redact), "explicit client redaction wins over opt-in");
+  } finally {
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+  }
+});
