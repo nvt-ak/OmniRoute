@@ -61,6 +61,7 @@ function stateFromWebhook(webhook: WebhookItem | null | undefined): WizardState 
     slack: { webhookUrl: webhook.kind === "slack" ? webhook.url : "" },
     telegram: { botToken: "", chatId: webhook.kind === "telegram" ? webhook.url : "" },
     discord: { webhookUrl: webhook.kind === "discord" ? webhook.url : "" },
+    msteams: { webhookUrl: webhook.kind === "msteams" ? webhook.url : "" },
     custom: { endpointUrl: webhook.kind === "custom" ? webhook.url : "", secretKey: "" },
     events: webhook.events.length > 0 ? webhook.events : ["*"],
     enabled: webhook.enabled,

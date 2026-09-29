@@ -6,7 +6,7 @@ import Button from "@/shared/components/Button";
 import Icon from "@/shared/components/Icon";
 import { WebhookDeliveriesPanel } from "./WebhookDeliveriesPanel";
 
-export type WebhookKind = "slack" | "telegram" | "discord" | "custom";
+export type WebhookKind = "slack" | "telegram" | "discord" | "msteams" | "custom";
 
 export interface WebhookItem {
   id: string;
@@ -27,6 +27,7 @@ const KIND_ICONS: Record<WebhookKind, string> = {
   slack: "chat",
   telegram: "send",
   discord: "forum",
+  msteams: "groups",
   custom: "webhook",
 };
 
@@ -34,6 +35,7 @@ const KIND_COLORS: Record<WebhookKind, string> = {
   slack: "text-chart-1",
   telegram: "text-chart-2",
   discord: "text-chart-3",
+  msteams: "text-chart-5",
   custom: "text-chart-4",
 };
 

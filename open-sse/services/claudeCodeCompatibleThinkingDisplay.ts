@@ -7,7 +7,8 @@ export function applyClaudeCodeCompatibleThinkingDisplay(
     summarizeThinking?: boolean;
   } = {}
 ) {
-  if (thinking.type === "disabled") {
+  // `between_tools` (Claude Sonnet 5.5) rejects any extra field, `display` included.
+  if (thinking.type === "disabled" || thinking.type === "between_tools") {
     return thinking;
   }
 

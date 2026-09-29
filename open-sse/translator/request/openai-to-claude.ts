@@ -61,10 +61,12 @@ function applyCopilotSummarizedThinkingDisplay(
   thinking: Record<string, unknown> | undefined,
   body: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | undefined {
+  // `between_tools` (Claude Sonnet 5.5) rejects any extra field, `display` included.
   if (
     !thinking ||
     !wantsCopilotSummarizedThinking(body) ||
-    thinking.type === "disabled"
+    thinking.type === "disabled" ||
+    thinking.type === "between_tools"
   ) {
     return thinking;
   }

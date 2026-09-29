@@ -316,6 +316,38 @@ test("serve preflight rejects a busy port even without any discovery tool (end-t
   }
 });
 
+// Regression: discovery returning null (lsof exits 1 on an idle port on macOS)
+// with a FREE port left the preflight holding null and crashed `omniroute` with
+// "Cannot read properties of null (reading 'length')".
+test("findPortOwners returns [] when discovery is unavailable and the port is free", async () => {
+  const { findPortOwners } = await import("../../bin/cli/utils/pid.mjs");
+  const owners = await findPortOwners(20128, {
+    findListeningPids: async () => null,
+    probePortFree: async () => true,
+  });
+  assert.deepEqual(owners, []);
+});
+
+test("findPortOwners returns [null] when discovery is unavailable and the port is held", async () => {
+  const { findPortOwners } = await import("../../bin/cli/utils/pid.mjs");
+  const owners = await findPortOwners(20128, {
+    findListeningPids: async () => null,
+    probePortFree: async () => false,
+  });
+  assert.deepEqual(owners, [null]);
+});
+
+test("findPortOwners returns the discovered pids without probing", async () => {
+  const { findPortOwners } = await import("../../bin/cli/utils/pid.mjs");
+  const owners = await findPortOwners(20128, {
+    findListeningPids: async () => [4242],
+    probePortFree: async () => {
+      throw new Error("probe must not run when discovery found an owner");
+    },
+  });
+  assert.deepEqual(owners, [4242]);
+});
+
 test(
   "findListeningPids finds a real listening socket (end-to-end)",
   {
