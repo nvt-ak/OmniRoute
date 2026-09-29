@@ -625,6 +625,49 @@ test("client abort before the deadline emits no error frame and no deadline warn
   );
 });
 
+// Next.js hands route handlers `new Proxy(nextRequest, handlers)` (dynamic
+// tracking, app-route module `proxyNextRequest`). Node 24's undici reads the
+// input's private `#state` in `new Request(input, …)`, which throws through a
+// Proxy — every /v1/chat/completions, /v1/messages and /v1/responses call
+// 500'd with an empty body. The wrapper must accept that Proxy and keep the
+// request intact and abortable.
+test("withDeadlineSignal accepts the Proxy-wrapped request Next.js passes to route handlers", async () => {
+  const clientController = new AbortController();
+  const payload = JSON.stringify({ model: "claude-opus-5", stream: true, messages: [] });
+  const inner = new Request("http://localhost/v1/messages?beta=true", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": "sk-test" },
+    body: payload,
+    signal: clientController.signal,
+  });
+  // Same receiver trick Next uses: forward every property get to the target.
+  const nextStyleProxy = new Proxy(inner, {
+    get: (target, prop) => Reflect.get(target, prop, target),
+  });
+
+  const { wrappedReq, deadlineController } = withDeadlineSignal(nextStyleProxy);
+
+  assert.equal(wrappedReq.method, "POST");
+  assert.equal(wrappedReq.url, "http://localhost/v1/messages?beta=true");
+  assert.equal(wrappedReq.headers.get("x-api-key"), "sk-test");
+  assert.equal(await wrappedReq.text(), payload, "body must survive byte-for-byte");
+  assert.equal(getDeadlineController(wrappedReq), deadlineController);
+
+  clientController.abort();
+  assert.equal(wrappedReq.signal.aborted, true, "client abort must reach the wrapped signal");
+  assert.equal(deadlineController.signal.aborted, false);
+});
+
+test("withDeadlineSignal keeps a bodyless GET intact", async () => {
+  const { wrappedReq } = withDeadlineSignal(
+    new Proxy(new Request("http://localhost/v1/models"), {
+      get: (target, prop) => Reflect.get(target, prop, target),
+    })
+  );
+  assert.equal(wrappedReq.method, "GET");
+  assert.equal(wrappedReq.body, null);
+});
+
 // The rebuild-fallback token map is keyed by strings, so without an explicit
 // release every streamed request left one entry behind forever. After N requests
 // through the wrapper — fast path, slow path, deadline expiry and client abort —

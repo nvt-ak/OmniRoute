@@ -36,8 +36,6 @@ const MAX_WINDOWS_PER_ACCOUNT = 6;
 const EVENT_STYLES: Partial<Record<WebhookEvent, string>> = {
   "request.completed": "good",
   "request.failed": "attention",
-  "provider.error": "warning",
-  "provider.recovered": "good",
   "quota.exceeded": "warning",
   "usage.report": "accent",
   "combo.switched": "accent",
@@ -312,7 +310,13 @@ function buildComboSwitchedBody(data: Record<string, unknown>): AdaptiveCardElem
       style: EVENT_STYLES["combo.switched"] ?? "accent",
       bleed: true,
       items: [
-        { type: "TextBlock", text: `${desc.emoji} ${desc.label}`, weight: "Bolder", size: "Medium", wrap: true },
+        {
+          type: "TextBlock",
+          text: `${desc.emoji} ${desc.label}`,
+          weight: "Bolder",
+          size: "Medium",
+          wrap: true,
+        },
       ],
     },
     { type: "TextBlock", text: `**${fromLabel}** ⤵️ **${toLabel}**`, wrap: true },

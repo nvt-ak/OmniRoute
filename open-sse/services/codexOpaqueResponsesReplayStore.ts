@@ -6,10 +6,6 @@ type ReplayKey = {
   readonly sessionId: string;
 };
 
-const REPLAY_ITEM_TYPES = ["reasoning", "function_call", "custom_tool_call"] as const;
-
-type CodexOpaqueResponsesReplayItemType = (typeof REPLAY_ITEM_TYPES)[number];
-
 export type CodexOpaqueResponsesReplayItem =
   | {
       readonly type: "reasoning";
@@ -146,7 +142,7 @@ export class CodexOpaqueResponsesReplayStore {
       entry.expiresAt <= this.now() ||
       latestTurn?.turnMarker !== value.expectedTurnMarker
     ) {
-      if (entry?.expiresAt <= this.now()) this.entries.delete(key);
+      if (entry && entry.expiresAt <= this.now()) this.entries.delete(key);
       return false;
     }
 
@@ -201,7 +197,7 @@ function freezeTurn(turn: CodexOpaqueResponsesReplayTurn): CodexOpaqueResponsesR
 }
 
 function positiveIntegerOrDefault(value: number | undefined, fallback: number): number {
-  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
 function hasSession(sessionId: string): boolean {

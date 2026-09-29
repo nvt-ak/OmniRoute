@@ -34,6 +34,11 @@ export interface ModelSpec {
   // Highest effort accepted while `thinking.type:"disabled"` is present. Claude Opus 5
   // rejects disabled thinking with xhigh/max, while accepting it through high.
   maxEffortWhenThinkingDisabled?: "high";
+  // Model rejects `thinking.type:"disabled"` but accepts this value as its lowest thinking
+  // setting. Claude Sonnet 5.5 answers `disabled` with 400 "Use thinking.type.between_tools
+  // for the lowest thinking setting"; `between_tools` turns off up-front thinking, is valid
+  // only at effort low/medium/high, and takes no other thinking field.
+  disabledThinkingReplacement?: "between_tools";
   // Explicit operator override for the no-thinking gateway alias (Fase 8.1). When unset,
   // the catalog auto-advertises a `no-think/…` variant for
   // Claude-family thinking-capable models that honor `disabled`. Set `true` to force the
@@ -449,6 +454,23 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
     aliases: BEDROCK_CLAUDE_ALIASES("claude-sonnet-4-6", "claude-sonnet-4.6"),
   },
 
+  // ── Claude Sonnet 5.5 ───────────────────────────────────────────
+  // Listed before Sonnet 5: prefix lookup is first-match, and `claude-sonnet-5-5-*`
+  // must not resolve to the Sonnet 5 spec (which forwards `disabled` → upstream 400).
+  "claude-sonnet-5-5": {
+    maxOutputTokens: 128000,
+    contextWindow: 1000000,
+    defaultThinkingBudget: 32000,
+    thinkingBudgetCap: 120000,
+    supportsThinking: true,
+    supportsTools: true,
+    supportsVision: true,
+    adaptiveThinkingOnly: true,
+    rejectsForcedToolChoice: true,
+    disabledThinkingReplacement: "between_tools",
+    aliases: BEDROCK_CLAUDE_ALIASES("claude-sonnet-5-5", "claude-sonnet-5.5"),
+  },
+
   // ── Claude Sonnet 5 ─────────────────────────────────────────────
   "claude-sonnet-5": {
     // 1M context, 128K max output. Adaptive-thinking-only (manual
@@ -562,6 +584,9 @@ export const MODEL_SPECS: Record<string, ModelSpec> = {
   },
 
   // ── Claude Opus 5.5 ─────────────────────────────────────────────
+  // Listed before Opus 5 for the same first-match prefix reason. Unlike Opus 5 it
+  // rejects `disabled` at every effort and has no `between_tools`, so `disabled` is
+  // dropped (adaptive default).
   "claude-opus-5-5": {
     maxOutputTokens: 128000,
     contextWindow: 1000000,
@@ -1107,24 +1132,44 @@ export function getAuthoritativeProviderContextWindow(
  * calls — valid for opus/sonnet, but claude-fable-5 defaults to adaptive thinking and rejects
  * `type:"disabled"` with an upstream 400. When the resolved target model is flagged
  * `rejectsThinkingDisabled`, drop the now-invalid `thinking` so the model uses its adaptive
- * default instead of hard-failing. Models that accept `disabled` are left untouched, and any
- * non-`disabled` thinking (enabled/adaptive) is always preserved. See issue #3554.
+ * default instead of hard-failing (#3554). When it declares `disabledThinkingReplacement`
+ * (Claude Sonnet 5.5), send that lowest setting instead, so thinking stays off. Models that
+ * accept `disabled` are left untouched, and any non-`disabled` thinking is always preserved.
  */
 export function normalizeThinkingForModel<T extends Record<string, unknown>>(
   body: T,
   modelId: string
 ): T {
   const thinking = body?.thinking as Record<string, unknown> | undefined;
-  if (
-    thinking &&
-    typeof thinking === "object" &&
-    thinking.type === "disabled" &&
-    getModelSpec(modelId)?.rejectsThinkingDisabled
-  ) {
-    const { thinking: _omitted, ...rest } = body as Record<string, unknown>;
-    return normalizeForcedToolChoiceForModel(rest as T, modelId);
+  if (thinking && typeof thinking === "object" && thinking.type === "disabled") {
+    const spec = getModelSpec(modelId);
+    if (spec?.disabledThinkingReplacement === "between_tools") {
+      return normalizeForcedToolChoiceForModel(withBetweenToolsThinking(body), modelId);
+    }
+    if (spec?.rejectsThinkingDisabled) {
+      const { thinking: _omitted, ...rest } = body as Record<string, unknown>;
+      return normalizeForcedToolChoiceForModel(rest as T, modelId);
+    }
   }
   return normalizeForcedToolChoiceForModel(body, modelId);
+}
+
+/**
+ * `between_tools` takes no other thinking field (display/budget_tokens/block_binding → 400)
+ * and is rejected at xhigh/max effort, so cap those to `high` — the client asked for
+ * thinking off, which only exists at high or below.
+ */
+function withBetweenToolsThinking<T extends Record<string, unknown>>(body: T): T {
+  const next: Record<string, unknown> = { ...body, thinking: { type: "between_tools" } };
+  const outputConfig = body.output_config;
+  if (outputConfig && typeof outputConfig === "object" && !Array.isArray(outputConfig)) {
+    const effort = (outputConfig as Record<string, unknown>).effort;
+    const normalizedEffort = typeof effort === "string" ? effort.toLowerCase() : "";
+    if (normalizedEffort === "xhigh" || normalizedEffort === "max") {
+      next.output_config = { ...outputConfig, effort: "high" };
+    }
+  }
+  return next as T;
 }
 
 /**
