@@ -52,7 +52,7 @@ test("OpenAI API catalog exposes gpt-6-sol and gpt-6-luna with 1050000 context (
   }
 });
 
-test("OpenAI API catalog puts Astra/Sol/Luna before GPT-5.6 family and keeps GPT-5.4", () => {
+test("OpenAI API catalog puts GPT-6.1 Sol and Astra/Sol/Luna before GPT-5.6 and keeps GPT-5.4", () => {
   const models = getModelsByProviderId("openai");
 
   assert.deepEqual(
@@ -111,62 +111,63 @@ test("OpenAI Astra declares unsupported sampling parameters for the chat pipelin
   ]);
 });
 
-test("OpenAI Astra tool requests use Responses and retain each supported reasoning effort", async () => {
-  const model = "gpt-6-astra";
-  assert.equal(
-    resolveChatCoreTargetFormat({
-      provider: "openai",
-      resolvedModel: model,
-      apiFormat: undefined,
-      customModelTargetFormat: undefined,
-      providerSpecificData: null,
-    }).targetFormat,
-    "openai-responses"
-  );
-  const originalFetch = globalThis.fetch;
-  const captured: Array<{ url: string; body: Record<string, unknown> }> = [];
-  globalThis.fetch = async (url, init) => {
-    captured.push({ url: String(url), body: JSON.parse(String(init?.body || "{}")) });
-    return new Response(JSON.stringify({ id: "resp_astra", object: "response", output: [] }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-  try {
-    for (const effort of ["low", "medium", "high", "xhigh", "max", "none", "minimal"]) {
-      const body = openaiToOpenAIResponsesRequest(
-        model,
-        {
-          model,
-          messages: [{ role: "user", content: "Call the test tool." }],
-          reasoning_effort: effort,
-          tools: [
-            {
-              type: "function",
-              function: { name: "test_tool", parameters: { type: "object", properties: {} } },
-            },
-          ],
-        },
-        false,
-        {}
-      );
-      await new DefaultExecutor("openai").execute({
-        model,
-        body,
-        stream: false,
-        credentials: { apiKey: "test-openai-key" },
+for (const model of ["gpt-6-astra", "gpt-6.1-sol"]) {
+  test(`OpenAI ${model} tool requests use Responses and retain each supported reasoning effort`, async () => {
+    assert.equal(
+      resolveChatCoreTargetFormat({
+        provider: "openai",
+        resolvedModel: model,
+        apiFormat: undefined,
+        customModelTargetFormat: undefined,
+        providerSpecificData: null,
+      }).targetFormat,
+      "openai-responses"
+    );
+    const originalFetch = globalThis.fetch;
+    const captured: Array<{ url: string; body: Record<string, unknown> }> = [];
+    globalThis.fetch = async (url, init) => {
+      captured.push({ url: String(url), body: JSON.parse(String(init?.body || "{}")) });
+      return new Response(JSON.stringify({ id: "resp_astra", object: "response", output: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
       });
-      const request = captured.at(-1)!;
-      assert.equal(request.url, "https://api.openai.com/v1/responses");
-      assert.equal(request.body.model, model);
-      assert.equal(
-        (request.body.reasoning as { effort: string }).effort,
-        effort === "none" || effort === "minimal" ? "low" : effort
-      );
-      assert.ok(Array.isArray(request.body.input));
-      assert.equal((request.body.tools as Array<{ name: string }>)[0].name, "test_tool");
+    };
+    try {
+      for (const effort of ["low", "medium", "high", "xhigh", "max", "none", "minimal"]) {
+        const body = openaiToOpenAIResponsesRequest(
+          model,
+          {
+            model,
+            messages: [{ role: "user", content: "Call the test tool." }],
+            reasoning_effort: effort,
+            tools: [
+              {
+                type: "function",
+                function: { name: "test_tool", parameters: { type: "object", properties: {} } },
+              },
+            ],
+          },
+          false,
+          {}
+        );
+        await new DefaultExecutor("openai").execute({
+          model,
+          body,
+          stream: false,
+          credentials: { apiKey: "test-openai-key" },
+        });
+        const request = captured.at(-1)!;
+        assert.equal(request.url, "https://api.openai.com/v1/responses");
+        assert.equal(request.body.model, model);
+        assert.equal(
+          (request.body.reasoning as { effort: string }).effort,
+          effort === "none" || effort === "minimal" ? "low" : effort
+        );
+        assert.ok(Array.isArray(request.body.input));
+        assert.equal((request.body.tools as Array<{ name: string }>)[0].name, "test_tool");
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
     }
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
+  });
+}

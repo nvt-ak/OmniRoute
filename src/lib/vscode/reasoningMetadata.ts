@@ -190,6 +190,7 @@ function getCodexGpt56DefaultReasoningEffort(model: VscodeCatalogModel) {
   const providerModelId = (parsed.model || model.root || modelId.split("/").pop() || modelId)
     .trim()
     .toLowerCase();
+  if (/^gpt-6\.1-sol(?:-(?:low|medium|high|xhigh|max|ultra))?$/.test(providerModelId)) return "low";
   const match = providerModelId.match(
     /^gpt-(?:5\.6-(sol|terra|luna)|6(?:\.1)?-(?:astra|sol|luna))(?:-(?:none|low|medium|high|xhigh|max|ultra))?$/
   );
