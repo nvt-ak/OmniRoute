@@ -46,7 +46,6 @@ export function stripContextWindowSuffix(
   return modelStr.replace(CONTEXT_WINDOW_SUFFIX_RE, "").trimEnd();
 }
 
-
 const CROSS_PROXY_MODEL_ALIASES: Record<string, string> = {
   "gpt-oss:120b": "gpt-oss-120b",
   "deepseek-v3.2-chat": "deepseek-v3.2",
