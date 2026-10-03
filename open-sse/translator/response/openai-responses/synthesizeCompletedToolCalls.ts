@@ -19,6 +19,7 @@ interface CompletionState {
   toolCallIndex?: number;
   currentToolCallId?: unknown;
   incompleteReason?: unknown;
+  responsesRefusalObserved?: boolean;
   roleEmitted?: boolean;
   finishReasonSent?: boolean;
   finishReason?: FinishReason;
@@ -45,6 +46,7 @@ interface AssistantRoleChunk {
  * state coupling at all.
  */
 export function computeFinishReason(state: CompletionState): FinishReason {
+  if (state.responsesRefusalObserved) return "content_filter";
   if ((state.toolCallIndex || 0) > 0 || state.currentToolCallId) return "tool_calls";
   // #15489: a `response.incomplete` terminal is a truncated turn, not a clean stop.
   if (state.incompleteReason === "max_output_tokens") return "length";

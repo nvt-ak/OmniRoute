@@ -6,6 +6,7 @@ import {
   CODEX_REASONING_REPLAY_ERROR_CODE,
   matchesReasoningReplayRejectionMessage,
 } from "../executors/codex/reasoningReplayRejection.ts";
+import { isSuccessfulResponsesCompletion } from "../services/errorClassifier.ts";
 
 type StreamReadinessLogger = {
   debug?: (tag: string, message: string) => void;
@@ -87,6 +88,7 @@ function hasUsefulValue(value: unknown, contentProbe = false): boolean {
   // tripping the #8649 empty-content guard.
   // This shape is specific to Responses streams; chat-completion frames do not produce it.
   if (value.type === "compaction" && hasNonEmptyString(value.encrypted_content)) return true;
+  if (typeof value.refusal === "string" && value.refusal.trim().length > 0) return true;
 
   if (contentProbe) {
     // Tool starts commit an action even before their name/arguments arrive.
@@ -98,6 +100,7 @@ function hasUsefulValue(value: unknown, contentProbe = false): boolean {
   for (const key of [
     "content",
     "text",
+    // Refusal strings are handled above: whitespace alone is not output.
     "delta",
     "reasoning_content",
     "reasoning",
@@ -254,6 +257,29 @@ const NORMAL_STOP_TERMINALS: ReadonlyMap<string, Set<string>> = new Map([
 ]);
 
 const TERMINAL_REASON_PATTERN = /"(finish_reason|stop_reason)"\s*:\s*"([^"]+)"/g;
+// Responses streams carry no finish_reason; a `response.completed` event whose
+// top-level `response.status` is "completed" is the format's normal stop.
+// Output items carry their own `status`, so the frame is parsed, not regexed.
+const RESPONSES_COMPLETED_PATTERN = /"type"\s*:\s*"response\.completed"/;
+
+function isCompletedResponsesFrame(frame: string): boolean {
+  if (!RESPONSES_COMPLETED_PATTERN.test(frame)) return false;
+  for (const line of frame.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+    try {
+      const parsed: unknown = JSON.parse(trimmed.slice(5).trim());
+      if (isRecord(parsed) && isSuccessfulResponsesCompletion(parsed.response)) {
+        return true;
+      }
+    } catch {
+      // non-JSON data line
+    }
+  }
+  return false;
+}
+const CLAUDE_CONTENT_BLOCK_PATTERN = /"type"\s*:\s*"content_block_(?:start|delta|stop)"/;
+const CLAUDE_MESSAGE_STOP_PATTERN = /"type"\s*:\s*"message_stop"/;
 
 const SSE_FIELD_LINE = /(?:^|\r?\n)\s*(?:data|event):/;
 
@@ -458,6 +484,18 @@ export type StreamContentWatcher = {
    */
   sawNormalStopTerminal: () => boolean;
   /**
+   * Last terminal stop reason seen (`stop`, `end_turn`, …; `response.completed`
+   * reads as `stop`), or null. Read once the stream is done so a trailing usage
+   * frame after the finish chunk is already counted.
+   */
+  lastStopReason: () => string | null;
+  /** Last provider usage object, including trailing usage-only chunks and provenance. */
+  usage: () => unknown;
+  /** True once a Claude content block event was seen, even if its text stayed empty. */
+  sawClaudeContentBlock: () => boolean;
+  /** True only after a message_stop data payload, not merely an event: header. */
+  sawClaudeMessageStop: () => boolean;
+  /**
    * True once the stream looked like SSE at all. Not every body reaching the
    * client wrapper is event-stream — a plain JSON completion is forwarded
    * through the same path — and a non-SSE body has no `data:` frames to judge,
@@ -501,6 +539,10 @@ export function createStreamContentWatcher(
   let error = false;
   let progress = 0;
   let compaction = 0;
+  let stopReason: string | null = null;
+  let usage: unknown;
+  let claudeContentBlock = false;
+  let claudeMessageStop = false;
 
   const inspect = (frame: string): void => {
     if (!frame) return;
@@ -518,12 +560,25 @@ export function createStreamContentWatcher(
         }
       }
     }
-    if (legitEmpty) return;
-    for (const match of frame.matchAll(TERMINAL_REASON_PATTERN)) {
-      if (legitEmptyReasons.has(match[2])) {
-        legitEmpty = true;
-        return;
+    if (!claudeContentBlock && CLAUDE_CONTENT_BLOCK_PATTERN.test(frame)) claudeContentBlock = true;
+    if (!claudeMessageStop && CLAUDE_MESSAGE_STOP_PATTERN.test(frame)) claudeMessageStop = true;
+    for (const line of frame.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      try {
+        const parsed: unknown = JSON.parse(trimmed.slice(5).trim());
+        if (!isRecord(parsed)) continue;
+        const response = isRecord(parsed.response) ? parsed.response : null;
+        if (parsed.usage && typeof parsed.usage === "object") usage = parsed.usage;
+        else if (response?.usage && typeof response.usage === "object") usage = response.usage;
+      } catch {
+        // Ignore sentinels and incomplete JSON; they cannot prove generation.
       }
+    }
+    if (isCompletedResponsesFrame(frame)) stopReason = "stop";
+    for (const match of frame.matchAll(TERMINAL_REASON_PATTERN)) {
+      stopReason = match[2];
+      if (legitEmptyReasons.has(match[2])) legitEmpty = true;
     }
   };
 
@@ -551,6 +606,10 @@ export function createStreamContentWatcher(
     compactionProgress: () => compaction,
     sawLegitEmptyTerminal: () => legitEmpty,
     sawNormalStopTerminal: () => normalStop,
+    lastStopReason: () => stopReason,
+    usage: () => usage,
+    sawClaudeContentBlock: () => claudeContentBlock,
+    sawClaudeMessageStop: () => claudeMessageStop,
     sawSseFrame: () => sse,
     sawError: () => error,
   };

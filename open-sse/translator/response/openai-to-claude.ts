@@ -363,8 +363,11 @@ function trackUsageFromChunk(chunk, state) {
   // Reasoning is already included in output_tokens — never add it on top. Keep the
   // count on the shared state so streaming usage accounting (tokens_reasoning) does
   // not lose it on this pivot; message_delta strips it from the client payload.
+  // The output_tokens_details breakdown stays client-visible: downstream empty-turn
+  // checks need this provenance when Codex's encrypted reasoning has no visible text.
   if (reasoningTokens > 0) {
     state.usage.reasoning_tokens = reasoningTokens;
+    state.usage.output_tokens_details = { reasoning_tokens: reasoningTokens };
   }
 }
 
@@ -512,25 +515,6 @@ export function openaiToClaudeResponse(chunk, state) {
     state._reasoningAccum = (state._reasoningAccum || "") + reasoningContent;
   }
 
-  // Refusal text is literal output, never input for XML/DSML tool-call shims.
-  if (typeof delta?.refusal === "string" && delta.refusal) {
-    if (!state.textBlockStarted) {
-      state.textBlockIndex = state.nextBlockIndex++;
-      state.textBlockStarted = true;
-      state.textBlockClosed = false;
-      results.push({
-        type: "content_block_start",
-        index: state.textBlockIndex,
-        content_block: { type: "text", text: "" },
-      });
-    }
-    results.push({
-      type: "content_block_delta",
-      index: state.textBlockIndex,
-      delta: { type: "text_delta", text: delta.refusal },
-    });
-  }
-
   // Handle regular content — strip the internal reasoning placeholder if
   // the model echoed it through ordinary content (#8081). Only the content
   // block emission is skipped when nothing meaningful remains; the chunk
@@ -668,6 +652,38 @@ export function openaiToClaudeResponse(chunk, state) {
     }
   }
 
+  // Refusal is user-visible output, not reasoning or content to sanitize.
+  let refusalText = typeof delta?.refusal === "string" ? delta.refusal : "";
+  if (refusalText && !state.hasRefusal) {
+    refusalText = (state.pendingRefusalWhitespace ?? "") + refusalText;
+    if (refusalText.trim().length === 0) {
+      state.pendingRefusalWhitespace = refusalText;
+      refusalText = "";
+    } else {
+      state.pendingRefusalWhitespace = undefined;
+    }
+  }
+  if (refusalText) {
+    state.hasRefusal = true;
+    stopThinkingBlock(state, results);
+    flushMarkdownBuffer(state, results);
+    if (!state.textBlockStarted) {
+      state.textBlockIndex = state.nextBlockIndex++;
+      state.textBlockStarted = true;
+      state.textBlockClosed = false;
+      results.push({
+        type: "content_block_start",
+        index: state.textBlockIndex,
+        content_block: { type: "text", text: "" },
+      });
+    }
+    results.push({
+      type: "content_block_delta",
+      index: state.textBlockIndex,
+      delta: { type: "text_delta", text: refusalText },
+    });
+  }
+
   // Tool calls
   if (delta?.tool_calls) {
     for (const tc of delta.tool_calls) {
@@ -756,6 +772,7 @@ export function openaiToClaudeResponse(chunk, state) {
     }
 
     state.claudeFinishEmitted = true;
+    state.pendingRefusalWhitespace = undefined;
     stopThinkingBlock(state, results);
 
     // Both preamble strippers buffer while a construct is still undecided (a

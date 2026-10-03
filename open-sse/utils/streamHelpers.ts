@@ -275,15 +275,41 @@ function hasOpenAICompatibleStreamValue(parsed: Record<string, unknown>): boolea
     const delta = isRecord(choice.delta) ? choice.delta : null;
     if (!delta) return false;
     if (typeof delta.content === "string" && delta.content.length > 0) return true;
-    if (typeof delta.refusal === "string" && delta.refusal.length > 0) return true;
+    if (typeof delta.refusal === "string" && delta.refusal.trim().length > 0) return true;
     if (hasAnyReasoningSignal(delta)) return true;
     return Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0;
   });
 }
 
+function hasResponsesPartValue(part: unknown): boolean {
+  if (!isRecord(part)) return false;
+  if (part.type === "refusal") {
+    return typeof part.refusal === "string" && part.refusal.trim().length > 0;
+  }
+  return typeof part.text === "string" && part.text.trim().length > 0;
+}
+
+function hasResponsesItemValue(item: unknown): boolean {
+  if (!isRecord(item)) return false;
+  if (item.type === "function_call") {
+    return typeof item.name === "string" && item.name.length > 0;
+  }
+  if (item.type === "compaction") {
+    return typeof item.encrypted_content === "string" && item.encrypted_content.length > 0;
+  }
+  return (
+    (Array.isArray(item.content) && item.content.some(hasResponsesPartValue)) ||
+    (Array.isArray(item.summary) && item.summary.some(hasResponsesPartValue))
+  );
+}
+
 function hasResponsesStreamValue(parsed: Record<string, unknown>, eventType = ""): boolean {
   const type = typeof parsed.type === "string" ? parsed.type : eventType;
   if (!type.startsWith("response.")) return false;
+  if (type === "response.refusal.delta" || type === "response.refusal.done") {
+    const refusal = parsed.delta ?? parsed.refusal;
+    return typeof refusal === "string" && refusal.trim().length > 0;
+  }
 
   if (
     type === "response.output_text.delta" ||
@@ -294,21 +320,22 @@ function hasResponsesStreamValue(parsed: Record<string, unknown>, eventType = ""
     return (
       (typeof parsed.delta === "string" && parsed.delta.length > 0) ||
       (typeof parsed.text === "string" && parsed.text.length > 0) ||
+      (typeof parsed.refusal === "string" && parsed.refusal.length > 0) ||
       (typeof parsed.arguments === "string" && parsed.arguments.length > 0)
     );
   }
 
   if (type === "response.output_item.added" || type === "response.output_item.done") {
-    return isRecord(parsed.item);
+    return hasResponsesItemValue(parsed.item);
   }
 
-  if (type === "response.content_part.added") {
-    return isRecord(parsed.part);
+  if (type === "response.content_part.added" || type === "response.content_part.done") {
+    return hasResponsesPartValue(parsed.part);
   }
 
   if (type === "response.completed" && isRecord(parsed.response)) {
     const output = parsed.response.output;
-    return Array.isArray(output) && output.length > 0;
+    return Array.isArray(output) && output.some(hasResponsesItemValue);
   }
 
   return false;
@@ -385,6 +412,7 @@ export function hasValuableContent(chunk: Record<string, unknown>, format: strin
     const delta = isRecord(firstChoice?.delta) ? firstChoice.delta : null;
     if (!firstChoice || !delta) return false;
     if (typeof delta.content === "string" && delta.content.length > 0) return true;
+    // Refusal separators are meaningful deltas; the translator validates the whole part.
     if (typeof delta.refusal === "string" && delta.refusal.length > 0) return true;
     if (hasAnyReasoningSignal(delta)) return true;
     if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) return true;

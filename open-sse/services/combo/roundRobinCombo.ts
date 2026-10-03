@@ -859,7 +859,8 @@ export async function handleRoundRobinCombo({
               log,
               config.responseValidation,
               null,
-              await isTrustedEmptyTurn(provider, result, targetForAttempt.connectionId)
+              await isTrustedEmptyTurn(provider, result, targetForAttempt.connectionId),
+              provider
             );
             releaseQualityClone(rrClone, result, quality);
             if (!quality.valid) {

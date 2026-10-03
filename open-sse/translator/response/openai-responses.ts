@@ -48,6 +48,7 @@ import {
   buildTextSnapshotChunk,
   closeResponsesTextSnapshots,
   recordResponsesTextDelta,
+  reconcileResponsesContentPartDone,
   reconcileResponsesTextDone,
   synthesizeTextItemSnapshot,
   recoverTextSnapshotsByOutputIndex,
@@ -1126,22 +1127,24 @@ function openaiResponsesToOpenAIResponseStream(chunk, state) {
     state.toolCallOutputIndexToCallId = new Map();
   }
 
-  // Text content delta
+  // Text/refusal deltas and snapshots (refusal surfaces as native `delta.refusal`).
   if (eventType === "response.output_text.delta" || eventType === "response.refusal.delta") {
     const delta = data.delta;
     if (typeof delta !== "string" || !delta) return null;
-    recordResponsesTextDelta(state, data, delta);
-    return buildTextSnapshotChunk(
-      state,
-      delta,
-      eventType === "response.refusal.delta" ? "refusal" : "content"
-    );
+    const kind = eventType === "response.refusal.delta" ? "refusal" : "content";
+    const emitted = recordResponsesTextDelta(state, data, delta, kind);
+    return emitted ? buildTextSnapshotChunk(state, emitted, kind) : null;
   }
 
   if (eventType === "response.output_text.done" || eventType === "response.refusal.done") {
-    const refusal = eventType === "response.refusal.done";
-    const suffix = reconcileResponsesTextDone(state, data, refusal ? data.refusal : data.text);
-    return suffix ? buildTextSnapshotChunk(state, suffix, refusal ? "refusal" : "content") : null;
+    const kind = eventType === "response.refusal.done" ? "refusal" : "content";
+    const text = kind === "refusal" ? data.refusal : data.text;
+    const suffix = reconcileResponsesTextDone(state, data, text, kind);
+    return suffix ? buildTextSnapshotChunk(state, suffix, kind) : null;
+  }
+  if (eventType === "response.content_part.done") {
+    const recovered = reconcileResponsesContentPartDone(state, data);
+    return recovered.length ? recovered : null;
   }
   if (eventType === "response.output_item.added" && data.item?.type === "message") {
     bindResponsesTextItem(state, data.item, data.output_index);

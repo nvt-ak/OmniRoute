@@ -28,7 +28,7 @@ export const codexProvider: RegistryEntry = {
     tokenUrl: "https://auth.openai.com/oauth/token",
   },
   models: [
-    // Live Codex catalog: 872K maximum window, low default, low..ultra.
+    // Live Codex catalog: 872K maximum window, medium default, low..ultra.
     { id: "gpt-6.1-sol", name: "GPT 6.1 Sol", ...GPT_5_6_CODEX_CAPABILITIES },
     { id: "gpt-6.1-sol-ultra", name: "GPT 6.1 Sol (Ultra)", ...GPT_5_6_CODEX_CAPABILITIES },
     { id: "gpt-6.1-sol-max", name: "GPT 6.1 Sol (Max)", ...GPT_5_6_CODEX_CAPABILITIES },

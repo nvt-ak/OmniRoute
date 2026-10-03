@@ -241,7 +241,8 @@ async function evaluatePinnedResponse(args: {
       log,
       config.responseValidation,
       null,
-      await isTrustedEmptyTurn(parseModel(pinnedModel).provider, pinnedResult)
+      await isTrustedEmptyTurn(parseModel(pinnedModel).provider, pinnedResult),
+      parseModel(pinnedModel).provider
     );
     releaseQualityClone(pinnedClone, pinnedResult, pinnedQuality);
     if (pinnedQuality.valid) return pinnedResult;

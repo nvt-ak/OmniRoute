@@ -2,10 +2,11 @@
  * #12398 — decides whether a Claude-format stream must be aborted with an
  * upstream error at flush time because the client got no usable content.
  *
- * Covers two shapes:
- *  - "partial lifecycle": message_start (and optionally message_delta /
- *    message_stop) arrived but no content block ever did — this was already
- *    correctly handled before #12398 and is preserved here unchanged.
+ * Covers three shapes:
+ *  - "clean empty turn": a real message_stop after end_turn or stop_sequence
+ *    is valid for native Claude, but never for Codex without usable content.
+ *  - "partial lifecycle": lifecycle events arrived but no content block or
+ *    clean completion did.
  *  - "truly empty": the upstream connection closed having sent literally
  *    zero bytes (HTTP 200, not even a message_start). The lifecycle flags
  *    above can never catch this shape since none of them are ever set — the
@@ -15,6 +16,9 @@
  * does not take that flag — both call sites in stream.ts only ever reach
  * here already scoped to a Claude-format response).
  */
+
+import { isEstimatedUsage } from "./usageTracking.ts";
+
 type ClaudeEmptyLifecycleLike = {
   hasError: boolean;
   hasContentBlock: boolean;
@@ -22,19 +26,39 @@ type ClaudeEmptyLifecycleLike = {
   hasMessageDelta: boolean;
   hasMessageStop: boolean;
   stopReason?: string | null;
+  usage?: unknown;
 };
 
-const CLEAN_EMPTY_STOP_REASONS = new Set(["end_turn", "stop_sequence", "refusal"]);
+const CLEAN_EMPTY_STOP_REASONS: Record<string, true> = {
+  end_turn: true,
+  stop_sequence: true,
+  refusal: true,
+};
+
+/**
+ * Claude SSE clean-stop policy, not a non-streaming or OpenAI exemption.
+ * Codex token usage does not make an empty response usable by the client.
+ */
+export function isCleanEmptyClaudeStop(
+  stopReason: unknown,
+  provider?: string | null,
+  usage?: unknown
+): boolean {
+  if (provider === "codex") return false;
+  if (provider === "antigravity" && isEstimatedUsage(usage)) return false;
+  return typeof stopReason === "string" && CLEAN_EMPTY_STOP_REASONS[stopReason] === true;
+}
 
 export function shouldAbortEmptyClaudeStream(
   lifecycle: ClaudeEmptyLifecycleLike,
-  sawAnyUpstreamPayload: boolean
+  sawAnyUpstreamPayload: boolean,
+  provider?: string | null
 ): boolean {
   if (lifecycle.hasError || lifecycle.hasContentBlock) return false;
   if (
     sawAnyUpstreamPayload &&
     lifecycle.hasMessageStop &&
-    CLEAN_EMPTY_STOP_REASONS.has(lifecycle.stopReason || "")
+    isCleanEmptyClaudeStop(lifecycle.stopReason, provider, lifecycle.usage)
   ) {
     return false;
   }

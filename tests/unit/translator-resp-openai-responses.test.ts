@@ -1134,3 +1134,343 @@ test("OpenAI -> Responses: tool-call output_index stays gap-free when the upstre
     );
   });
 });
+
+function collectResponseSnapshots(events, state = {}) {
+  const chunks = [];
+  for (const event of events) {
+    const translated = openaiResponsesToOpenAIResponse(event, state);
+    if (Array.isArray(translated)) chunks.push(...translated);
+    else if (translated) chunks.push(translated);
+  }
+  return chunks;
+}
+
+const snapshotMessage = (id, content, phase = "final_answer") => ({
+  id,
+  type: "message",
+  role: "assistant",
+  phase,
+  content: typeof content === "string" ? [{ type: "output_text", text: content }] : content,
+});
+
+test("Responses -> OpenAI: snapshots extend partial deltas once across identifier aliases", () => {
+  const state = { accumulatedContent: "Hello" };
+  const chunks = collectResponseSnapshots(
+    [
+      {
+        type: "response.output_item.added",
+        output_index: 3,
+        item: snapshotMessage("msg_alias", []),
+      },
+      { type: "response.output_text.delta", output_index: 3, content_index: 0, delta: "Hello" },
+      {
+        type: "response.output_text.done",
+        item_id: "msg_alias",
+        content_index: 0,
+        text: "Hello world",
+      },
+      {
+        type: "response.content_part.done",
+        output_index: 3,
+        content_index: 0,
+        part: { type: "output_text", text: "Hello world" },
+      },
+      {
+        type: "response.output_item.done",
+        output_index: 3,
+        item: snapshotMessage("msg_alias", "Hello world"),
+      },
+      {
+        type: "response.completed",
+        response: { output: [snapshotMessage("msg_alias", "Hello world")] },
+      },
+    ],
+    state
+  );
+  assert.deepEqual(
+    chunks
+      .filter((chunk) => chunk.choices[0].delta.content)
+      .map((chunk) => chunk.choices[0].delta.content),
+    ["Hello", " world"]
+  );
+  assert.equal(state.accumulatedContent, "Hello world");
+  assert.equal(chunks[0].choices[0].delta.role, "assistant");
+  assert.equal(chunks.at(-1).choices[0].finish_reason, "stop");
+});
+
+test("Responses -> OpenAI: non-prefix and shorter snapshots never corrupt emitted text", () => {
+  const chunks = collectResponseSnapshots([
+    { type: "response.output_text.delta", item_id: "msg_edit", delta: "Original" },
+    { type: "response.output_text.done", item_id: "msg_edit", text: "Replacement" },
+    { type: "response.output_text.done", item_id: "msg_edit", text: "Orig" },
+  ]);
+  assert.deepEqual(
+    chunks.map((chunk) => chunk.choices[0].delta.content),
+    ["Original"]
+  );
+});
+
+for (const terminal of ["text", "part", "item", "completed"]) {
+  test(`Responses -> OpenAI: recovers ${terminal}-only provider text before finish`, () => {
+    const item = snapshotMessage("msg_snapshot", "Recovered\nanswer");
+    const event =
+      terminal === "text"
+        ? { type: "response.output_text.done", item_id: item.id, text: "Recovered\nanswer" }
+        : terminal === "part"
+          ? { type: "response.content_part.done", item_id: item.id, part: item.content[0] }
+          : terminal === "item"
+            ? { type: "response.output_item.done", item }
+            : {
+                type: "response.completed",
+                response: { output: [item], usage: { input_tokens: 5, output_tokens: 2 } },
+              };
+    const state = { accumulatedContent: "" };
+    const chunks = collectResponseSnapshots(
+      [
+        event,
+        ...(terminal === "completed"
+          ? []
+          : [{ type: "response.completed", response: { output: [item] } }]),
+      ],
+      state
+    );
+    assert.equal(
+      chunks.map((chunk) => chunk.choices[0].delta.content ?? "").join(""),
+      "Recovered\nanswer"
+    );
+    assert.equal(state.accumulatedContent, "Recovered\nanswer");
+    assert.equal(chunks[0].choices[0].delta.role, "assistant");
+    assert.equal(chunks.at(-1).choices[0].finish_reason, "stop");
+    if (terminal === "completed") assert.equal(chunks.at(-1).usage.completion_tokens, 2);
+  });
+}
+
+test("Responses -> OpenAI: content indexes and message identities deduplicate independently", () => {
+  const parts = [
+    { type: "output_text", text: "Same" },
+    { type: "output_text", text: "Same" },
+  ];
+  const chunks = collectResponseSnapshots([
+    { type: "response.output_text.delta", item_id: "msg_parts", content_index: 1, delta: "Same" },
+    { type: "response.output_item.done", item: snapshotMessage("msg_parts", parts) },
+    {
+      type: "response.completed",
+      response: {
+        output: [snapshotMessage("msg_parts", parts), snapshotMessage("msg_other", "Same")],
+      },
+    },
+  ]);
+  assert.equal(
+    chunks.map((chunk) => chunk.choices[0].delta.content ?? "").join(""),
+    "SameSameSame"
+  );
+});
+
+test("Responses -> OpenAI: anonymous single-part events deduplicate against a single identified snapshot", () => {
+  const chunks = collectResponseSnapshots([
+    { type: "response.output_text.delta", delta: "Single" },
+    { type: "response.output_text.done", text: "Single answer" },
+    {
+      type: "response.completed",
+      response: { output: [snapshotMessage("msg_single", "Single answer")] },
+    },
+  ]);
+  assert.equal(
+    chunks.map((chunk) => chunk.choices[0].delta.content ?? "").join(""),
+    "Single answer"
+  );
+});
+
+test("Responses -> OpenAI: ambiguous anonymous fragments do not replay multi-part or multi-message snapshots", () => {
+  for (const output of [
+    [
+      snapshotMessage("msg_parts", [
+        { type: "output_text", text: "A" },
+        { type: "output_text", text: "B" },
+      ]),
+    ],
+    [snapshotMessage("msg_a", "A"), snapshotMessage("msg_b", "B")],
+  ]) {
+    const chunks = collectResponseSnapshots([
+      { type: "response.output_text.delta", delta: "A" },
+      { type: "response.completed", response: { output } },
+    ]);
+    assert.equal(chunks.map((chunk) => chunk.choices[0].delta.content ?? "").join(""), "A");
+  }
+});
+
+test("Responses -> OpenAI: commentary snapshots are excluded without suppressing final_answer", () => {
+  const commentary = snapshotMessage("msg_hidden", "Private commentary", "commentary");
+  const final = snapshotMessage("msg_final", "Final answer");
+  const chunks = collectResponseSnapshots([
+    { type: "response.output_item.done", output_index: 0, item: commentary },
+    { type: "response.output_text.done", item_id: commentary.id, text: "Private commentary" },
+    { type: "response.completed", response: { output: [commentary, final] } },
+  ]);
+  assert.equal(
+    chunks.map((chunk) => chunk.choices[0].delta.content ?? "").join(""),
+    "Final answer"
+  );
+  const optout = collectResponseSnapshots(
+    [{ type: "response.completed", response: { output: [commentary, final] } }],
+    { dropResponsesCommentary: false }
+  );
+  assert.equal(
+    optout.map((chunk) => chunk.choices[0].delta.content ?? "").join(""),
+    "Private commentaryFinal answer"
+  );
+});
+
+test("Responses -> OpenAI: recovered text precedes synthesized tools and the single terminal finish", () => {
+  const chunks = collectResponseSnapshots([
+    {
+      type: "response.completed",
+      response: {
+        output: [
+          snapshotMessage("msg_tool", "Using tool"),
+          {
+            type: "function_call",
+            call_id: "call_snapshot",
+            name: "read_file",
+            arguments: '{"path":"/tmp/a"}',
+          },
+        ],
+      },
+    },
+  ]);
+  assert.equal(chunks[0].choices[0].delta.content, "Using tool");
+  assert.equal(chunks.filter((chunk) => chunk.choices[0].finish_reason).length, 1);
+  assert.equal(chunks.at(-1).choices[0].finish_reason, "tool_calls");
+  assert.equal(chunks[1].choices[0].delta.tool_calls[0].id, "call_snapshot");
+});
+
+test("Responses -> OpenAI: refusal deltas and snapshots emit native refusal exactly once", () => {
+  const refusal = { type: "refusal", refusal: "I cannot help with that." };
+  const chunks = collectResponseSnapshots([
+    { type: "response.refusal.delta", item_id: "msg_refusal", content_index: 0, delta: "I cannot" },
+    {
+      type: "response.refusal.done",
+      item_id: "msg_refusal",
+      content_index: 0,
+      refusal: refusal.refusal,
+    },
+    { type: "response.content_part.done", item_id: "msg_refusal", content_index: 0, part: refusal },
+    { type: "response.output_item.done", item: snapshotMessage("msg_refusal", [refusal]) },
+    {
+      type: "response.completed",
+      response: { output: [snapshotMessage("msg_refusal", [refusal])] },
+    },
+  ]);
+  assert.equal(
+    chunks.map((chunk) => chunk.choices[0].delta.refusal ?? "").join(""),
+    refusal.refusal
+  );
+  assert.ok(chunks.every((chunk) => chunk.choices[0].delta.content === undefined));
+  assert.equal(chunks.at(-1).choices[0].finish_reason, "content_filter");
+});
+
+test("Responses -> OpenAI: refusal separators and leading whitespace survive snapshots exactly once", () => {
+  for (const fragments of [
+    ["I cannot", " ", "help with that.", "\n"],
+    [" \n", "\t", "I cannot", " ", "help with that.", "\n"],
+  ]) {
+    const refusal = fragments.join("");
+    const part = { type: "refusal", refusal };
+    const state = { accumulatedContent: "" };
+    const chunks = collectResponseSnapshots(
+      [
+        ...fragments.map((delta) => ({
+          type: "response.refusal.delta",
+          item_id: "msg_spaces",
+          content_index: 0,
+          delta,
+        })),
+        { type: "response.refusal.done", item_id: "msg_spaces", content_index: 0, refusal },
+        { type: "response.content_part.done", item_id: "msg_spaces", content_index: 0, part },
+        { type: "response.output_item.done", item: snapshotMessage("msg_spaces", [part]) },
+        {
+          type: "response.completed",
+          response: { output: [snapshotMessage("msg_spaces", [part])] },
+        },
+      ],
+      state
+    );
+    assert.equal(chunks.map((chunk) => chunk.choices[0].delta.refusal ?? "").join(""), refusal);
+    assert.equal(state.accumulatedContent, refusal);
+    assert.ok(chunks.some((chunk) => chunk.choices[0].delta.refusal === " "));
+    assert.equal(chunks.at(-1).choices[0].finish_reason, "content_filter");
+  }
+});
+
+test("Responses -> OpenAI: leading refusal whitespace waits per part and whitespace-only turns stay empty", () => {
+  const state = { accumulatedContent: "" };
+  const pending = collectResponseSnapshots(
+    [
+      { type: "response.refusal.delta", item_id: "msg_pending", content_index: 0, delta: " \n" },
+      { type: "response.refusal.delta", item_id: "msg_pending", content_index: 1, delta: "\t" },
+    ],
+    state
+  );
+  assert.equal(pending.length, 0);
+  assert.equal(state.accumulatedContent, "");
+  assert.equal(state.responsesRefusalObserved, undefined);
+  const completed = collectResponseSnapshots(
+    [
+      { type: "response.refusal.delta", item_id: "msg_pending", content_index: 1, delta: "No." },
+      { type: "response.refusal.done", item_id: "msg_pending", content_index: 1, refusal: "\tNo." },
+    ],
+    state
+  );
+  assert.equal(completed.map((chunk) => chunk.choices[0].delta.refusal ?? "").join(""), "\tNo.");
+
+  const emptyState = { accumulatedContent: "" };
+  const emptyPart = { type: "refusal", refusal: " \n\t" };
+  const empty = collectResponseSnapshots(
+    [
+      { type: "response.refusal.delta", item_id: "msg_empty", delta: " \n" },
+      { type: "response.refusal.delta", item_id: "msg_empty", delta: "\t" },
+      { type: "response.refusal.done", item_id: "msg_empty", refusal: emptyPart.refusal },
+      {
+        type: "response.completed",
+        response: { output: [snapshotMessage("msg_empty", [emptyPart])] },
+      },
+    ],
+    emptyState
+  );
+  assert.ok(empty.every((chunk) => chunk.choices[0].delta.refusal === undefined));
+  assert.equal(emptyState.accumulatedContent, "");
+  assert.equal(emptyState.responsesRefusalObserved, undefined);
+  assert.equal(empty.at(-1).choices[0].finish_reason, "stop");
+});
+
+test("Responses -> OpenAI: meaningful refusal snapshot includes pending whitespace without duplication", () => {
+  const state = { accumulatedContent: "" };
+  const chunks = collectResponseSnapshots(
+    [
+      { type: "response.refusal.delta", item_id: "msg_snapshot_spaces", delta: " \n" },
+      { type: "response.refusal.done", item_id: "msg_snapshot_spaces", refusal: " \nNo." },
+      { type: "response.refusal.done", item_id: "msg_snapshot_spaces", refusal: " \nNo.\t" },
+    ],
+    state
+  );
+  assert.deepEqual(
+    chunks.map((chunk) => chunk.choices[0].delta.refusal),
+    [" \nNo.", "\t"]
+  );
+  assert.equal(state.accumulatedContent, " \nNo.\t");
+});
+
+test("Responses -> OpenAI: terminal refusal-only messages remain observable; empty refusal is not fabricated", () => {
+  for (const refusal of ["No.", ""]) {
+    const chunks = collectResponseSnapshots([
+      {
+        type: "response.completed",
+        response: {
+          output: [snapshotMessage("msg_refusal_only", [{ type: "refusal", refusal }])],
+        },
+      },
+    ]);
+    assert.equal(chunks.map((chunk) => chunk.choices[0].delta.refusal ?? "").join(""), refusal);
+    assert.equal(chunks.at(-1).choices[0].finish_reason, refusal ? "content_filter" : "stop");
+  }
+});

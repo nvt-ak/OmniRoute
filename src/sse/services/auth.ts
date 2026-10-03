@@ -217,7 +217,10 @@ import {
   mutateExclusiveConnectionLease,
 } from "./exclusiveConnectionLeasePolicy";
 import { readHeaderValue, type AuthRequestHeaders } from "./headerReader.ts";
-import { isRequestScopedServerFailure } from "./syntheticEmptyStream.ts";
+import {
+  isRequestScopedServerFailure,
+  isSyntheticEmptyStreamFailure,
+} from "./syntheticEmptyStream.ts";
 import {
   getOAuthSessionAvailability,
   reserveOAuthSession,
@@ -2500,6 +2503,26 @@ export async function markAccountUnavailable(
           cooldownMs: new Date(scopeRateLimitedUntil).getTime() - Date.now(),
         };
       }
+    }
+
+    // This 502 is synthesized by OmniRoute after an empty stream, not reported
+    // by the provider. It says nothing about account/model health, including
+    // Codex; keep any existing cooldown above, but never create a new one.
+    if (isSyntheticEmptyStreamFailure(status, errorText)) {
+      updateProviderConnection(connectionId, {
+        lastErrorType: "server_error",
+        lastError: model ? `Model ${model} server_error` : "Synthetic empty stream response",
+        lastErrorAt: new Date().toISOString(),
+        errorCode: status,
+      }).catch(() => {});
+      log.info(
+        "AUTH",
+        `Synthetic empty-stream error for ${provider ?? "unknown"}:${model ?? "n/a"} — ${status} server_error (no model lockout or account cooldown, connection stays active)`,
+        {
+          ...(options.correlationId ? { correlationId: options.correlationId } : {}),
+        }
+      );
+      return { shouldFallback: true, cooldownMs: 0 };
     }
 
     // #10460: model-unsupported 400 — the PROVIDER does not serve this model, not this

@@ -343,8 +343,8 @@ export async function executeRuntimeUnitCombo(args: {
           args.log,
           args.config.responseValidation as ResponseValidationConfig | undefined,
           args.signal,
-          unit.kind === "model" &&
-            (await isTrustedEmptyTurn(unit.provider, response, unit.connectionId))
+          await isTrustedEmptyTurn(unit.provider, response, unit.connectionId),
+          unit.provider
         );
         releaseQualityClone(unitClone, response, quality);
         if (quality.valid) {
