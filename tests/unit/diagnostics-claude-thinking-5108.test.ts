@@ -59,6 +59,37 @@ test("Claude Code /model probe: content:[] + max_tokens is not empty_choices", (
   assert.equal(detectMalformedNonStream(body), null);
 });
 
+test("native Claude refusal with no content is not malformed", () => {
+  const body = {
+    ...claudeMsg([]),
+    stop_reason: "refusal",
+    stop_details: { type: "refusal", category: "reasoning_extraction" },
+    usage: { input_tokens: 121, cache_read_input_tokens: 55744, output_tokens: 0 },
+  };
+  assert.equal(detectMalformedNonStream(body, "claude"), null);
+});
+
+test("Claude refusal does not mask malformed blocks or error envelopes", () => {
+  for (const body of [
+    { ...claudeMsg([{ type: "text", text: "" }]), stop_reason: "refusal" },
+    { ...claudeMsg([null]), stop_reason: "refusal" },
+    { ...claudeMsg([]), stop_reason: "refusal", role: "user" },
+    { ...claudeMsg([]), stop_reason: "refusal", type: "error" },
+    { ...claudeMsg([]), stop_reason: "refusal", content: null },
+    { ...claudeMsg([]), stop_reason: "refusal", error: { type: "api_error" } },
+    { ...claudeMsg([]), stop_reason: "unknown" },
+    { ...claudeMsg([]), stop_reason: "end_turn" },
+  ]) {
+    assert.equal(detectMalformedNonStream(body, "claude"), "empty_choices");
+  }
+});
+
+test("Claude empty nonterminal and existing terminal exemptions are unchanged", () => {
+  for (const stop_reason of [null, "max_tokens", "tool_use", "length"]) {
+    assert.equal(detectMalformedNonStream({ ...claudeMsg([]), stop_reason }, "claude"), null);
+  }
+});
+
 test("#5108/#9971 Claude thinking block with neither text nor signature is valid output (was empty_choices)", () => {
   const body = claudeMsg([{ type: "thinking", thinking: "", signature: "" }]);
   // #9971: an empty thinking block is valid structural output — the upstream can
@@ -69,9 +100,6 @@ test("#5108/#9971 Claude thinking block with neither text nor signature is valid
 
 // Existing OpenAI / Responses behavior must be unchanged.
 test("#5108 OpenAI chat completion still validated normally", () => {
-  assert.equal(
-    detectMalformedNonStream({ choices: [{ message: { content: "hi" } }] }),
-    null
-  );
+  assert.equal(detectMalformedNonStream({ choices: [{ message: { content: "hi" } }] }), null);
   assert.equal(detectMalformedNonStream({ choices: [] }), "empty_choices");
 });

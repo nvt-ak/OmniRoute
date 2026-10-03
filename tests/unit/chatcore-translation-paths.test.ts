@@ -2867,6 +2867,124 @@ test("chatCore rejects malformed non-streaming JSON payloads", async () => {
   assert.equal(result.status, 502);
   assert.equal(result.error, "Invalid JSON response from provider");
 });
+test("chatCore preserves a native Claude HTTP-200 empty refusal without fallback or lockout", async () => {
+  const model = "claude-sonnet-5-5";
+  const connection = await providersDb.createProviderConnection({
+    provider: "claude",
+    authType: "apikey",
+    name: "claude-native-refusal",
+    apiKey: "claude-key",
+    isActive: true,
+    providerSpecificData: {},
+  });
+  // Captured native response: the refusal is expressed by stop metadata, not text.
+  const upstreamBody = {
+    model,
+    id: "msg_native_refusal",
+    type: "message",
+    role: "assistant",
+    content: [],
+    container: null,
+    stop_reason: "refusal",
+    stop_sequence: null,
+    stop_details: {
+      type: "refusal",
+      category: "reasoning_extraction",
+      explanation:
+        "This request was blocked as it seems to violate Anthropic's Terms of Service restrictions on reverse engineering or duplicating model outputs. To learn more, visit https://www.anthropic.com/legal/commercial-terms.",
+    },
+    usage: {
+      input_tokens: 121,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 55744,
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+      output_tokens: 0,
+      service_tier: "standard",
+      inference_geo: "not_available",
+    },
+    diagnostics: null,
+    context_management: { applied_edits: [] },
+  };
+  let successes = 0;
+  try {
+    const { result, calls } = await invokeChatCore({
+      provider: "claude",
+      model,
+      endpoint: "/v1/messages",
+      connectionId: connection.id,
+      credentials: { apiKey: "claude-key", providerSpecificData: {} },
+      responseFormat: "claude",
+      body: {
+        model,
+        max_tokens: 1024,
+        stream: false,
+        messages: [{ role: "user", content: "native refusal replay" }],
+      },
+      onRequestSuccess() {
+        successes += 1;
+      },
+      responseFactory() {
+        return new Response(JSON.stringify(upstreamBody), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.response.status, 200);
+    const { usage, ...nativeBody } = await result.response.json();
+    const { usage: upstreamUsage, ...expectedNativeBody } = upstreamBody;
+    assert.deepEqual(nativeBody, expectedNativeBody);
+    // Usage normalization is an existing independent behavior; the refusal
+    // must retain its zero output rather than become a synthetic error.
+    assert.equal(usage.output_tokens, upstreamUsage.output_tokens);
+    assert.equal(calls.length, 1, "a refusal must not trigger an upstream retry or fallback");
+    assert.equal(calls[0].body.model, model);
+    assert.equal(successes, 1);
+    assert.equal(isModelLocked("claude", connection.id, model), false);
+  } finally {
+    clearModelLock("claude", connection.id, model);
+  }
+});
+
+test("chatCore still rejects genuinely empty native Claude completions", async () => {
+  for (const stop_reason of ["end_turn", "unknown", null]) {
+    const { result, calls } = await invokeChatCore({
+      provider: "claude",
+      // No model-family fallback exists for this id, so exactly one upstream
+      // attempt precedes the 502 (opus-5-5 now falls back to opus-5).
+      model: "claude-haiku-4-5-20251001",
+      endpoint: "/v1/messages",
+      responseFormat: "claude",
+      body: {
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1024,
+        stream: false,
+        messages: [{ role: "user", content: "empty native completion control" }],
+      },
+      responseFactory() {
+        return new Response(
+          JSON.stringify({
+            type: "message",
+            role: "assistant",
+            content: [],
+            stop_reason,
+            usage: { input_tokens: 121, output_tokens: 0 },
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      },
+    });
+    assert.equal(result.success, false);
+    assert.equal(result.status, 502);
+    assert.equal(calls.length, 1);
+  }
+});
+
 test("chatCore does not substitute an OpenAI model after empty content", async () => {
   const { calls, result } = await invokeChatCore({
     provider: "openai",

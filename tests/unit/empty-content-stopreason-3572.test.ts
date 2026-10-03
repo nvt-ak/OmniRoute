@@ -26,6 +26,54 @@ test("#3572 Claude: empty content + stop_reason=tool_use is NOT empty-failure", 
   assert.equal(isEmptyContentResponse({ content: [], stop_reason: "tool_use" }), false);
 });
 
+test("Claude: native empty refusal is a valid terminal response", () => {
+  assert.equal(
+    isEmptyContentResponse(
+      {
+        type: "message",
+        role: "assistant",
+        content: [],
+        stop_reason: "refusal",
+        stop_details: { type: "refusal", category: "reasoning_extraction" },
+        usage: { input_tokens: 121, cache_read_input_tokens: 55744, output_tokens: 0 },
+      },
+      { provider: "claude" }
+    ),
+    false
+  );
+});
+
+test("Claude: refusal metadata does not exempt malformed or error-shaped empty bodies", () => {
+  for (const body of [
+    { content: [], stop_reason: "refusal" },
+    { type: "error", role: "assistant", content: [], stop_reason: "refusal" },
+    { type: "message", role: "user", content: [], stop_reason: "refusal" },
+    {
+      type: "message",
+      role: "assistant",
+      content: [],
+      stop_reason: "refusal",
+      error: { type: "api_error", message: "upstream failure" },
+    },
+    { type: "message", role: "assistant", content: null, stop_reason: "refusal" },
+    { choices: [{ message: { content: "" }, finish_reason: "refusal" }] },
+  ]) {
+    assert.equal(isEmptyContentResponse(body, { provider: "claude" }), true);
+  }
+});
+
+test("Claude: native empty unknown, null, and normal stops remain empty failures", () => {
+  for (const stop_reason of ["unknown", "toString", null, "end_turn"]) {
+    assert.equal(
+      isEmptyContentResponse(
+        { type: "message", role: "assistant", content: [], stop_reason },
+        { provider: "claude" }
+      ),
+      true
+    );
+  }
+});
+
 test("#3572 Claude: empty content with NO stop_reason IS still empty-failure", () => {
   assert.equal(isEmptyContentResponse({ content: [] }), true);
   assert.equal(isEmptyContentResponse({ content: [], stop_reason: null }), true);

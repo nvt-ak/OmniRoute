@@ -129,6 +129,44 @@ function makeSseResponse(body: string): Response {
   });
 }
 
+test("synthetic empty-stream 502 is request-scoped and not retried as provider outage", async () => {
+  for (const code of [undefined, "empty_response"]) {
+    const verdict = await validateResponseQuality(
+      makeSseResponse(
+        `event: error\ndata: ${JSON.stringify({
+          type: "error",
+          error: {
+            type: "upstream_response_error",
+            code,
+            status: 502,
+            message: "Claude returned an empty response (no content block)",
+          },
+        })}\n\n`
+      ),
+      true,
+      {}
+    );
+    assert.strictEqual(verdict.valid, false);
+    assert.strictEqual(verdict.upstreamFailure?.status, 502);
+    assert.strictEqual(verdict.upstreamFailure?.requestScoped, true);
+    assert.strictEqual(verdict.upstreamFailure?.retryable, false);
+    assert.strictEqual(verdict.upstreamFailure?.code, code ?? "upstream_error");
+  }
+});
+
+test("real provider 502 remains retryable and not request-scoped", async () => {
+  const verdict = await validateResponseQuality(
+    makeSseResponse(
+      'event: error\ndata: {"type":"error","error":{"type":"api_error","status":502,"message":"provider bad gateway"}}\n\n'
+    ),
+    true,
+    {}
+  );
+  assert.strictEqual(verdict.valid, false);
+  assert.strictEqual(verdict.upstreamFailure?.requestScoped, false);
+  assert.strictEqual(verdict.upstreamFailure?.retryable, true);
+});
+
 test("streaming incomplete lifecycle: bytes with no terminator and no structured SSE → invalid", async () => {
   // Garbage bytes that look like SSE prefix but never produce a complete
   // `data:` line, no `event:`, no [DONE], no message_stop. This is the
@@ -239,4 +277,61 @@ test("non-streaming chat completion that stopped with no text stays invalid", as
   );
   assert.strictEqual(verdict.valid, false);
   assert.match(verdict.reason ?? "", /empty content/);
+});
+
+test("Claude provider identity alone does not establish native empty-turn connection trust", async () => {
+  const body = [
+    'event: message_start\ndata: {"type":"message_start","message":{"content":[]}}\n\n',
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+  ].join("");
+  for (const trustedEmptyTurn of [false, true]) {
+    const verdict = await validateResponseQuality(
+      makeSseResponse(body),
+      true,
+      {},
+      undefined,
+      undefined,
+      trustedEmptyTurn,
+      "claude"
+    );
+    assert.strictEqual(verdict.valid, trustedEmptyTurn);
+    if (trustedEmptyTurn) {
+      assert.ok(verdict.clonedResponse);
+      assert.strictEqual(await verdict.clonedResponse!.text(), body);
+    }
+  }
+});
+
+test("Antigravity provider policy remains independent of native Claude connection trust", async () => {
+  const body = 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n';
+  const verdict = await validateResponseQuality(
+    makeSseResponse(body),
+    true,
+    {},
+    undefined,
+    undefined,
+    false,
+    "antigravity"
+  );
+  assert.strictEqual(verdict.valid, true);
+  assert.ok(verdict.clonedResponse);
+  assert.strictEqual(await verdict.clonedResponse!.text(), body);
+});
+
+test("empty-turn trust never exempts an explicit upstream error", async () => {
+  const verdict = await validateResponseQuality(
+    makeSseResponse(
+      'event: error\ndata: {"type":"error","error":{"type":"api_error","status":502,"message":"provider bad gateway"}}\n\n'
+    ),
+    true,
+    {},
+    undefined,
+    undefined,
+    true,
+    "claude"
+  );
+  assert.strictEqual(verdict.valid, false);
+  assert.strictEqual(verdict.upstreamFailure?.status, 502);
+  assert.strictEqual(verdict.upstreamFailure?.retryable, true);
 });

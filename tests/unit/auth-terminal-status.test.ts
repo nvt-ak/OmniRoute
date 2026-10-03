@@ -18,6 +18,23 @@ async function resetStorage() {
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 }
 
+const SYNTHETIC_EMPTY_STREAM_ERROR = "Claude returned an empty response (no content block)";
+const CODEX_MODEL = "gpt-5.5";
+
+async function seedCodexConnection(overrides: Record<string, unknown> = {}) {
+  return providersDb.createProviderConnection({
+    provider: "codex",
+    authType: "oauth",
+    accessToken: "codex-access-token",
+    refreshToken: "codex-refresh-token",
+    isActive: true,
+    testStatus: "active",
+    backoffLevel: 0,
+    providerSpecificData: { unrelated: { retained: true } },
+    ...overrides,
+  });
+}
+
 test.after(() => {
   core.resetDbInstance();
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -293,4 +310,175 @@ test("markAccountUnavailable keeps oauth-invalid 401 errors non-terminal", async
   assert.equal(after.testStatus, "active");
   assert.equal(after.lastErrorType, "oauth_invalid_token");
   assert.ok(!after.rateLimitedUntil);
+});
+
+test("markAccountUnavailable keeps Codex selectable after a synthetic empty-stream 502", async () => {
+  await resetStorage();
+  const conn = await seedCodexConnection();
+  const connectionId = conn.id;
+  assert.ok(typeof connectionId === "string");
+  const before = await providersDb.getProviderConnectionById(connectionId);
+
+  const result = await auth.markAccountUnavailable(
+    connectionId,
+    502,
+    SYNTHETIC_EMPTY_STREAM_ERROR,
+    "codex",
+    CODEX_MODEL
+  );
+  const after = await providersDb.getProviderConnectionById(connectionId);
+
+  assert.equal(result.shouldFallback, true);
+  assert.equal(result.cooldownMs, 0);
+  assert.equal(after.testStatus, "active");
+  assert.ok(!after.rateLimitedUntil);
+  assert.equal(after.backoffLevel, before.backoffLevel);
+  assert.deepEqual(after.providerSpecificData, before.providerSpecificData);
+  assert.equal(accountFallback.getModelLockoutInfo("codex", connectionId, CODEX_MODEL), null);
+  assert.equal(accountFallback.isModelLocked("codex", connectionId, CODEX_MODEL), false);
+  assert.equal(
+    accountFallback.getModelLockoutInfo("codex", connectionId, "gpt-5.3-codex-spark"),
+    null
+  );
+
+  const selected = await auth.getProviderCredentials("codex", null, null, CODEX_MODEL);
+  assert.ok(selected);
+  assert.equal(selected.connectionId, connectionId);
+});
+
+test("markAccountUnavailable still cools Codex after a genuine Bad gateway 502", async () => {
+  await resetStorage();
+  const conn = await seedCodexConnection();
+  const connectionId = conn.id;
+  assert.ok(typeof connectionId === "string");
+
+  const result = await auth.markAccountUnavailable(
+    connectionId,
+    502,
+    "Bad gateway",
+    "codex",
+    CODEX_MODEL
+  );
+  const after = await providersDb.getProviderConnectionById(connectionId);
+
+  assert.equal(result.shouldFallback, true);
+  assert.ok(result.cooldownMs > 0);
+  assert.equal(after.testStatus, "unavailable");
+  assert.ok(new Date(String(after.rateLimitedUntil)).getTime() > Date.now());
+  assert.ok(Number(after.backoffLevel) > 0);
+});
+
+test("markAccountUnavailable still scope-cools Codex for the same empty-stream message with 429", async () => {
+  await resetStorage();
+  const conn = await seedCodexConnection();
+  const connectionId = conn.id;
+  assert.ok(typeof connectionId === "string");
+
+  const result = await auth.markAccountUnavailable(
+    connectionId,
+    429,
+    SYNTHETIC_EMPTY_STREAM_ERROR,
+    "codex",
+    CODEX_MODEL
+  );
+  const after = await providersDb.getProviderConnectionById(connectionId);
+  const providerSpecificData = after.providerSpecificData;
+  assert.ok(providerSpecificData && typeof providerSpecificData === "object");
+  assert.ok("codexScopeRateLimitedUntil" in providerSpecificData);
+  const scopeCooldowns = providerSpecificData.codexScopeRateLimitedUntil;
+  assert.ok(scopeCooldowns && typeof scopeCooldowns === "object" && "codex" in scopeCooldowns);
+
+  assert.equal(result.shouldFallback, true);
+  assert.ok(result.cooldownMs > 0);
+  assert.ok(new Date(String(scopeCooldowns.codex)).getTime() > Date.now());
+  assert.equal(accountFallback.isModelLocked("codex", connectionId, CODEX_MODEL), true);
+});
+
+test("markAccountUnavailable preserves terminal Codex state on a synthetic empty-stream 502", async () => {
+  await resetStorage();
+  const conn = await seedCodexConnection({
+    testStatus: "credits_exhausted",
+    lastError: "insufficient_quota",
+    lastErrorType: "quota_exhausted",
+    errorCode: 402,
+    backoffLevel: 2,
+  });
+  const connectionId = conn.id;
+  assert.ok(typeof connectionId === "string");
+  const before = await providersDb.getProviderConnectionById(connectionId);
+
+  const result = await auth.markAccountUnavailable(
+    connectionId,
+    502,
+    SYNTHETIC_EMPTY_STREAM_ERROR,
+    "codex",
+    CODEX_MODEL
+  );
+  const after = await providersDb.getProviderConnectionById(connectionId);
+
+  assert.equal(result.shouldFallback, true);
+  assert.equal(result.cooldownMs, 0);
+  assert.deepEqual(after, before);
+  assert.equal(accountFallback.getModelLockoutInfo("codex", connectionId, CODEX_MODEL), null);
+});
+
+test("markAccountUnavailable preserves an existing Codex connection cooldown on a synthetic 502", async () => {
+  await resetStorage();
+  const conn = await seedCodexConnection({
+    testStatus: "unavailable",
+    rateLimitedUntil: new Date(Date.now() + 60_000).toISOString(),
+    lastError: "Bad gateway",
+    lastErrorType: "server_error",
+    errorCode: 502,
+    backoffLevel: 2,
+  });
+  const connectionId = conn.id;
+  assert.ok(typeof connectionId === "string");
+  const before = await providersDb.getProviderConnectionById(connectionId);
+
+  const result = await auth.markAccountUnavailable(
+    connectionId,
+    502,
+    SYNTHETIC_EMPTY_STREAM_ERROR,
+    "codex",
+    CODEX_MODEL
+  );
+  const after = await providersDb.getProviderConnectionById(connectionId);
+
+  assert.equal(result.shouldFallback, true);
+  assert.ok(result.cooldownMs > 0);
+  assert.deepEqual(after, before);
+  assert.equal(accountFallback.getModelLockoutInfo("codex", connectionId, CODEX_MODEL), null);
+});
+
+test("markAccountUnavailable preserves an existing Codex child cooldown on a synthetic 502", async () => {
+  await resetStorage();
+  const conn = await seedCodexConnection({
+    providerSpecificData: {
+      unrelated: { retained: true },
+      codexScopeRateLimitedUntil: { codex: new Date(Date.now() + 60_000).toISOString() },
+      codexScopeRateLimitSource: { codex: "429" },
+    },
+    lastError: "rate limit exceeded",
+    lastErrorType: "rate_limited",
+    errorCode: 429,
+    backoffLevel: 2,
+  });
+  const connectionId = conn.id;
+  assert.ok(typeof connectionId === "string");
+  const before = await providersDb.getProviderConnectionById(connectionId);
+
+  const result = await auth.markAccountUnavailable(
+    connectionId,
+    502,
+    SYNTHETIC_EMPTY_STREAM_ERROR,
+    "codex",
+    CODEX_MODEL
+  );
+  const after = await providersDb.getProviderConnectionById(connectionId);
+
+  assert.equal(result.shouldFallback, true);
+  assert.ok(result.cooldownMs > 0);
+  assert.deepEqual(after, before);
+  assert.equal(accountFallback.getModelLockoutInfo("codex", connectionId, CODEX_MODEL), null);
 });

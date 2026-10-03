@@ -1101,6 +1101,7 @@ export function sanitizeStreamingChunk(parsed: unknown): unknown {
                 ? collapseExcessiveNewlines(stripZeroWidthText(deltaRecord.content))
                 : deltaRecord.content;
           }
+          if (typeof deltaRecord.refusal === "string") delta.refusal = deltaRecord.refusal;
           copyOpenAICompatibleReasoningFields(deltaRecord, delta);
           // Parity with the non-streaming path: strip the zero-width joiners that the
           // request side injects into agent words. copyOpenAICompatibleReasoningFields

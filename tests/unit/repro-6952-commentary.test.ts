@@ -252,3 +252,130 @@ test("TRANSLATE mode passes commentary through when dropping is disabled (gate/r
   );
   assert.ok(output.includes(FINAL_TEXT), "the final answer text must still be forwarded");
 });
+
+for (const sourceFormat of ["claude", "openai"]) {
+  for (const terminal of ["text", "part", "item", "completed"]) {
+    test(`snapshot-only ${terminal} survives fragmented Responses -> ${sourceFormat} without a final newline`, async () => {
+      const item = {
+        id: "msg_terminal",
+        type: "message",
+        role: "assistant",
+        phase: "final_answer",
+        content: [{ type: "output_text", text: FINAL_TEXT }],
+      };
+      const events = [
+        { type: "response.created", response: { id: "resp_terminal", output: [] } },
+        ...(terminal === "text"
+          ? [
+              {
+                type: "response.output_text.done",
+                item_id: item.id,
+                content_index: 0,
+                text: FINAL_TEXT,
+              },
+            ]
+          : terminal === "part"
+            ? [
+                {
+                  type: "response.content_part.done",
+                  item_id: item.id,
+                  content_index: 0,
+                  part: item.content[0],
+                },
+              ]
+            : terminal === "item"
+              ? [{ type: "response.output_item.done", item }]
+              : []),
+        {
+          type: "response.completed",
+          response: {
+            id: "resp_terminal",
+            status: "completed",
+            output: [item],
+            usage: { input_tokens: 5, output_tokens: 8 },
+          },
+        },
+      ];
+      const wire = events.map(sse).join("").trimEnd();
+      const fragments = [];
+      for (let i = 0; i < wire.length; i += 7) fragments.push(wire.slice(i, i + 7));
+      const output = await readTransformed(fragments, {
+        ...TRANSLATE_RESPONSES_TO_CLAUDE_OPTIONS,
+        sourceFormat,
+      });
+      assert.equal(output.split(FINAL_TEXT).length - 1, 1);
+      if (sourceFormat === "claude") {
+        assert.ok(output.includes('"stop_reason":"end_turn"'));
+        assert.ok(output.includes("event: message_stop"));
+      } else {
+        assert.ok(output.includes('"finish_reason":"stop"'));
+        assert.ok(output.includes("[DONE]"));
+      }
+    });
+  }
+}
+
+test("completed-only snapshots exclude commentary and recover final_answer; optout preserves both", async () => {
+  const output = [
+    {
+      id: "msg_snapshot_commentary",
+      type: "message",
+      role: "assistant",
+      phase: "commentary",
+      content: [{ type: "output_text", text: COMMENTARY_TEXT }],
+    },
+    {
+      id: "msg_snapshot_final",
+      type: "message",
+      role: "assistant",
+      phase: "final_answer",
+      content: [{ type: "output_text", text: FINAL_TEXT }],
+    },
+  ];
+  for (const dropResponsesCommentary of [true, false]) {
+    const client = await readTransformed(
+      [
+        sse({
+          type: "response.completed",
+          response: {
+            id: "resp_snapshot",
+            status: "completed",
+            output,
+            usage: { input_tokens: 5, output_tokens: 8 },
+          },
+        }),
+      ],
+      { ...TRANSLATE_RESPONSES_TO_CLAUDE_OPTIONS, dropResponsesCommentary }
+    );
+    assert.equal(client.includes(COMMENTARY_TEXT), !dropResponsesCommentary);
+    assert.equal(client.split(FINAL_TEXT).length - 1, 1);
+  }
+});
+
+test("refusal-only completed snapshot is rendered as genuine refusal in Claude client", async () => {
+  const refusal = "I cannot assist with that request.";
+  const client = await readTransformed(
+    [
+      sse({
+        type: "response.completed",
+        response: {
+          id: "resp_refusal",
+          status: "completed",
+          output: [
+            {
+              id: "msg_refusal",
+              type: "message",
+              role: "assistant",
+              content: [{ type: "refusal", refusal }],
+            },
+          ],
+          usage: { input_tokens: 5, output_tokens: 8 },
+        },
+      }),
+    ],
+    TRANSLATE_RESPONSES_TO_CLAUDE_OPTIONS
+  );
+  assert.equal(client.split(refusal).length - 1, 1);
+  assert.ok(client.includes('"stop_reason":"refusal"'));
+  assert.ok(client.includes("event: message_stop"));
+});

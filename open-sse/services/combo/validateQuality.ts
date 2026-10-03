@@ -19,6 +19,12 @@ import { evaluateResponseValidation, type ResponseValidationConfig } from "./res
 import { getReasoningTokens } from "../../../src/lib/usage/tokenAccounting.ts";
 import { REASONING_BUFFER_MIN_TRIGGER } from "../reasoningTokenBuffer.ts";
 import type { ComboRetryAfter } from "./types.ts";
+import {
+  isTrustedEmptyStop,
+  isSuccessfulResponsesCompletion,
+  isEmptyContentResponse,
+} from "../errorClassifier.ts";
+import { isCleanEmptyClaudeStop } from "../../utils/streamClaudeEmptyBody.ts";
 
 /**
  * #12659: below this actual `completion_tokens` count, a reasoning-truncated
@@ -122,6 +128,7 @@ interface SseLifecycleFlags {
   hasLifecycleEnd: boolean;
   hasMessageStop: boolean;
   stopReason: string | null;
+  usage: unknown;
 }
 
 /** Read `parsed.<key>` as a nested object bag, or null when absent/not an object. */
@@ -171,6 +178,10 @@ function messageDeltaEndsLifecycle(parsed: Record<string, unknown>): boolean {
 interface OpenAiLifecycleFlags {
   hasChoicePayload: boolean;
   hasTerminalMarker: boolean;
+  /** Last non-null `finish_reason` seen (#14160 trusted empty-stop check). */
+  lastFinishReason: string | null;
+  /** Last usage frame, including trailing usage-only chunks and provenance. */
+  usage: unknown;
 }
 
 /** Update `flags` in place from one parsed OpenAI-shape SSE `data:` payload. */
@@ -178,9 +189,15 @@ function applyOpenAiLifecycleEvent(
   parsed: Record<string, unknown>,
   flags: OpenAiLifecycleFlags
 ): void {
+  if (parsed.usage && typeof parsed.usage === "object") flags.usage = parsed.usage;
   if (!isOpenAIChoicesPayload(parsed)) return;
   flags.hasChoicePayload = true;
-  if (hasOpenAIFinishReason(parsed)) flags.hasTerminalMarker = true;
+  if (!hasOpenAIFinishReason(parsed)) return;
+  flags.hasTerminalMarker = true;
+  const reason = (parsed.choices as Array<Record<string, unknown> | null>).find(
+    (choice) => typeof choice?.finish_reason === "string"
+  )?.finish_reason;
+  if (typeof reason === "string") flags.lastFinishReason = reason;
 }
 
 /**
@@ -218,9 +235,10 @@ function applySseLifecycleEvent(
       flags.hasMessageStop = true;
       return false;
     case "message_delta": {
-      const stopReason = asObject(parsed, "delta")?.stop_reason;
-      if (typeof stopReason === "string") flags.stopReason = stopReason;
       if (messageDeltaEndsLifecycle(parsed)) flags.hasLifecycleEnd = true;
+      const reason = asObject(parsed, "delta")?.stop_reason;
+      if (typeof reason === "string") flags.stopReason = reason;
+      if (parsed.usage && typeof parsed.usage === "object") flags.usage = parsed.usage;
       return false;
     }
     default:
@@ -234,17 +252,21 @@ function responsesApiOutputHasContent(output: unknown): boolean {
     output.some((item) => {
       if (!item || typeof item !== "object") return false;
       const record = item as Record<string, unknown>;
-      if (record.type !== "message") return Boolean(record.type);
-      const content = record.content;
-      return (
-        Array.isArray(content) &&
-        content.some((part) => {
-          if (!isRecord(part)) return false;
-          return (
-            (typeof part.text === "string" && part.text.length > 0) ||
-            (part.type === "refusal" && typeof part.refusal === "string" && part.refusal.length > 0)
-          );
-        })
+      if (record.type !== "message" && record.type !== "reasoning") return Boolean(record.type);
+      const parts =
+        record.type === "reasoning" ? [record.content, record.summary] : [record.content];
+      return parts.some(
+        (content) =>
+          Array.isArray(content) &&
+          content.some((part) => {
+            if (!isRecord(part)) return false;
+            return (
+              (typeof part.text === "string" && part.text.length > 0) ||
+              (part.type === "refusal" &&
+                typeof part.refusal === "string" &&
+                part.refusal.trim().length > 0)
+            );
+          })
       );
     })
   );
@@ -365,7 +387,9 @@ export async function validateResponseQuality(
   log: { warn?: (...args: unknown[]) => void },
   responseValidation?: ResponseValidationConfig | null,
   signal?: AbortSignal | null,
-  trustedEmptyTurn: boolean | (() => boolean) = false
+  trustedEmptyTurn: boolean | (() => boolean) = false,
+  /** Target provider id for provider-specific empty-stop policy. */
+  provider?: string | null
 ): Promise<ResponseQualityResult> {
   const permitsEmptyTurn = () =>
     typeof trustedEmptyTurn === "function" ? trustedEmptyTurn() : trustedEmptyTurn;
@@ -425,9 +449,18 @@ export async function validateResponseQuality(
       hasLifecycleEnd: false,
       hasMessageStop: false,
       stopReason: null,
+      usage: undefined,
     };
     // #7285: OpenAI-shape lifecycle tracking, parallel to `sse` above.
-    const openAi: OpenAiLifecycleFlags = { hasChoicePayload: false, hasTerminalMarker: false };
+    const openAi: OpenAiLifecycleFlags = {
+      hasChoicePayload: false,
+      hasTerminalMarker: false,
+      lastFinishReason: null,
+      usage: undefined,
+    };
+    let hasResponsesPayload = false;
+    let successfulResponsesCompletion = false;
+    let responsesUsage: unknown;
     // User log 1784230812441-bf3789: the previous `!sawAnyBytes` gate below let
     // ANY byte — even unparseable garbage with no SSE framing at all — pass
     // combo failover through. These two flags are tracked in parallel to
@@ -526,6 +559,14 @@ export async function validateResponseQuality(
         const eventType =
           (typeof parsed.type === "string" ? parsed.type : null) || pendingEventType || "";
         pendingEventType = "";
+        if (eventType.startsWith("response.")) {
+          hasResponsesPayload = true;
+          if (eventType === "response.completed") {
+            const response = asObject(parsed, "response");
+            successfulResponsesCompletion = isSuccessfulResponsesCompletion(response);
+            responsesUsage = response?.usage;
+          }
+        }
 
         if (isStreamingUpstreamError(parsed, eventType)) {
           upstreamFailure = classifyStreamingUpstreamFailure(parsed) ?? upstreamFailure;
@@ -534,7 +575,18 @@ export async function validateResponseQuality(
 
         if (isTerminalUsageOnlyChunk(parsed, eventType)) sawTerminator = true;
 
-        if (isKnownNonClaudeStreamPayload(parsed, eventType)) {
+        if (
+          isKnownNonClaudeStreamPayload(parsed, eventType) &&
+          (!eventType.startsWith("response.") ||
+            (parsed.item
+              ? responsesApiOutputHasContent([parsed.item])
+              : eventType === "response.completed"
+                ? responsesApiOutputHasContent(asObject(parsed, "response")?.output)
+                : eventType === "response.content_part.added" ||
+                    eventType === "response.content_part.done"
+                  ? responsesApiOutputHasContent([{ type: "message", content: [parsed.part] }])
+                  : true))
+        ) {
           return "content";
         }
 
@@ -642,7 +694,10 @@ export async function validateResponseQuality(
               !sse.hasContentBlock &&
               (sse.stopReason === "refusal" ||
                 (permitsEmptyTurn() &&
-                  (sse.stopReason === "end_turn" || sse.stopReason === "stop_sequence")))
+                  isCleanEmptyClaudeStop(sse.stopReason, provider, sse.usage)) ||
+                (provider !== "claude" &&
+                  provider !== "anthropic" &&
+                  isTrustedEmptyStop(provider, sse.stopReason, sse.usage)))
             ) {
               return { valid: true, clonedResponse: buildReplayResponse(reader) };
             }
@@ -710,13 +765,26 @@ export async function validateResponseQuality(
           // `outcome === "content"` branch above and never reaches here —
           // this branch only fires on genuinely empty completions.
           if (openAi.hasChoicePayload && openAi.hasTerminalMarker) {
-            if (permitsEmptyTurn())
+            if (
+              permitsEmptyTurn() ||
+              isTrustedEmptyStop(provider, openAi.lastFinishReason, openAi.usage)
+            ) {
               return { valid: true, clonedResponse: buildReplayResponse(reader) };
+            }
             log.warn?.(
               "COMBO",
               "Streaming OpenAI-shape response reached finish_reason/[DONE] with no content, reasoning, or tool_calls — marking as invalid for combo failover"
             );
             return { valid: false, reason: "streaming openai terminated with empty completion" };
+          }
+          if (hasResponsesPayload) {
+            if (
+              successfulResponsesCompletion &&
+              (permitsEmptyTurn() || isTrustedEmptyStop(provider, "stop", responsesUsage))
+            ) {
+              return { valid: true, clonedResponse: buildReplayResponse(reader) };
+            }
+            return { valid: false, reason: "streaming responses terminated with empty completion" };
           }
 
           // Incomplete lifecycle or non-Claude stream — replay all buffered
@@ -890,7 +958,8 @@ export async function validateResponseQuality(
   if (json?.object === "response") {
     if (
       !responsesApiOutputHasContent(json.output) &&
-      !(json.status === "completed" && permitsEmptyTurn())
+      !(isSuccessfulResponsesCompletion(json) &&
+        (permitsEmptyTurn() || isTrustedEmptyStop(provider, "stop", json.usage)))
     )
       return { valid: false, reason: "empty_choices" };
     const status = typeof json.status === "string" ? json.status : "";
@@ -912,6 +981,15 @@ export async function validateResponseQuality(
     };
   }
 
+  if (
+    provider === "codex" &&
+    json.type === "message" &&
+    Array.isArray(json.content) &&
+    isEmptyContentResponse(json, { provider })
+  ) {
+    return { valid: false, reason: "empty_choices" };
+  }
+
   if (!Array.isArray(choices) || choices.length === 0) {
     // `json?.error` is already handled unconditionally above (#6427); reaching
     // here means no error envelope was present.
@@ -927,6 +1005,7 @@ export async function validateResponseQuality(
 
   const content = message.content;
   const toolCalls = message.tool_calls;
+  const hasRefusal = typeof message.refusal === "string" && message.refusal.trim().length > 0;
   // Issue #2341: Reasoning models (Kimi-K2.5-TEE, GLM-5-TEE, etc.) emit their
   // output in `reasoning_content` (or `reasoning`) with `content: null`. The
   // validator used to flag those as empty and trigger a false-positive 502
@@ -965,7 +1044,6 @@ export async function validateResponseQuality(
     return { valid: false, reason: specViolation };
   }
 
-  const hasRefusal = typeof message.refusal === "string" && message.refusal.trim().length > 0;
   if (!hasContent && !hasToolCalls && !hasRefusal) {
     // finish_reason "length" is a truncated completion (max_tokens hit), the
     // same case the Claude shape exempts as stop_reason "max_tokens" (#12968).
@@ -973,7 +1051,8 @@ export async function validateResponseQuality(
     // is a valid response, not a reason to fail the combo target over.
     if (
       firstChoice?.finish_reason === "length" ||
-      (firstChoice?.finish_reason === "stop" && permitsEmptyTurn())
+      (firstChoice?.finish_reason === "stop" && permitsEmptyTurn()) ||
+      isTrustedEmptyStop(provider, firstChoice?.finish_reason, json.usage)
     ) {
       return {
         valid: true,
@@ -993,7 +1072,7 @@ export async function validateResponseQuality(
   // all completion tokens, treat as invalid so the combo loop retries with more
   // tokens or falls back to a non-reasoning model.
   const contentIsEmpty = content === null || content === undefined || content === "";
-  if (contentIsEmpty && hasReasoningContent && !hasToolCalls) {
+  if (contentIsEmpty && hasReasoningContent && !hasToolCalls && !hasRefusal) {
     // The 90%-of-completion-tokens ratio below is a proxy for "the request was
     // truncated mid-reasoning" for providers that don't report finish_reason
     // reliably. When finish_reason IS reported as "length" (or the Anthropic-shape

@@ -4581,11 +4581,6 @@
       "count": 1
     }
   },
-  "tests/unit/t19-codex-responses-empty-content.test.ts": {
-    "@typescript-eslint/no-explicit-any": {
-      "count": 4
-    }
-  },
   "tests/unit/t23-t24-fallback-resilience.test.ts": {
     "@typescript-eslint/no-explicit-any": {
       "count": 1
