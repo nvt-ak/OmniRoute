@@ -112,6 +112,89 @@ test("Codex provider window costs use the weekly reset window and API key USD li
   assert.equal(result.rows[0].limitUsedPercent, 25);
 });
 
+test("Codex weekly-only plan stored under the position-based `session` key still drives the quota estimate", async () => {
+  await localDb.updatePricing({
+    codex: { "gpt-5.5": { input: 10, output: 20 } },
+  });
+  const key = await apiKeys.createApiKey("Codex Prolite", "machine-codex-prolite");
+
+  // Shape persisted by buildCodexUsageQuotas when primary_window is a 7-day window.
+  providerLimits.setProviderLimitsCache("codex-prolite", {
+    quotas: {
+      session: {
+        used: 25,
+        total: 100,
+        remaining: 75,
+        resetAt: "2026-07-02T23:00:00.000Z",
+        unlimited: false,
+        windowSeconds: 604800,
+        displayName: "Weekly",
+      },
+    },
+    plan: "prolite",
+    message: null,
+    fetchedAt: "2026-06-28T12:00:00.000Z",
+  });
+
+  await usageHistory.saveRequestUsage({
+    provider: "codex",
+    model: "gpt-5.5",
+    connectionId: "codex-prolite",
+    apiKeyId: key.id,
+    apiKeyName: "Codex Prolite",
+    tokens: { input: 1_000_000, output: 0 },
+    timestamp: "2026-06-26T00:00:00.000Z",
+  });
+
+  const result = await getProviderWindowCostBreakdown({
+    provider: "codex",
+    connectionId: "codex-prolite",
+    now: Date.parse("2026-06-28T12:00:00.000Z"),
+  });
+
+  assert.equal(result.windowSource, "provider_weekly_reset");
+  assert.equal(result.quotaName, "session");
+  assert.equal(result.windowResetAt, "2026-07-02T23:00:00.000Z");
+  assert.equal(result.quotaUsedPercent, 25);
+  assert.equal(result.totalCostUsd, 10);
+  assert.equal(result.estimatedFullQuotaUsd, 40);
+});
+
+test("Codex short and monthly windows are not mistaken for the weekly window", async () => {
+  providerLimits.setProviderLimitsCache("codex-free", {
+    quotas: {
+      session: {
+        used: 100,
+        total: 100,
+        remaining: 0,
+        resetAt: "2026-07-15T03:59:18.000Z",
+        windowSeconds: 2592000,
+        displayName: "Monthly",
+      },
+      weekly: {
+        used: 10,
+        total: 100,
+        remaining: 90,
+        resetAt: "2026-06-28T15:00:00.000Z",
+        windowSeconds: 18000,
+        displayName: "Session",
+      },
+    },
+    plan: "free",
+    message: null,
+    fetchedAt: "2026-06-28T12:00:00.000Z",
+  });
+
+  const result = await getProviderWindowCostBreakdown({
+    provider: "codex",
+    connectionId: "codex-free",
+    now: Date.parse("2026-06-28T12:00:00.000Z"),
+  });
+
+  assert.equal(result.windowSource, "fallback_rolling_7d");
+  assert.equal(result.quotaName, null);
+});
+
 test("Claude provider window costs split spending across API keys from the current weekly window", async () => {
   await localDb.updatePricing({
     claude: {

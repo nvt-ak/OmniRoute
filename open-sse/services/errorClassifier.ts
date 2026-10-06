@@ -23,11 +23,19 @@ const LEGIT_EMPTY_CLAUDE_STOP: Record<string, true> = {
 };
 const LEGIT_EMPTY_OPENAI_FINISH = new Set(["length", "tool_calls", "content_filter"]);
 
-// #14160: only Antigravity is allowed to complete a normal stop without usable
-// content. Codex output/reasoning token counters prove computation, not a
-// client-usable answer, so even provider-reported positive usage cannot exempt
-// its empty completions. Locally estimated usage never establishes trust.
-const TRUSTED_EMPTY_STOP_PROVIDERS: Record<string, true> = { antigravity: true };
+// #14160: providers whose normal stop with no usable content is a real answer.
+// Codex: a watchdog-style prompt ("silence preferred") completes with an empty
+// `final_answer`, status "completed" and reasoning_tokens 0 (live capture,
+// 2026-10-06), so reasoning tokens cannot be the trust signal. Streams instead
+// require the upstream Responses terminal to affirm success before this rule is
+// consulted (stream.ts `successfulResponsesCompletion`); incomplete, failed and
+// unterminated turns never reach a normal stop. Estimated usage never trusts.
+const TRUSTED_EMPTY_STOP_PROVIDERS: Record<string, true> = { antigravity: true, codex: true };
+// Codex must report generated output (live silent turns: output_tokens 4). A
+// usage-less or zero-output shell is not a model answer and keeps failing over.
+// Streams additionally require a successful upstream Responses terminal; chat
+// and non-stream shapes carry no `final_answer` marker, so this is their gate.
+const REQUIRES_GENERATED_OUTPUT: Record<string, true> = { codex: true };
 const NORMAL_STOP_REASONS: Record<string, true> = {
   stop: true,
   end_turn: true,
@@ -52,7 +60,8 @@ export function isTrustedEmptyStop(
   if (typeof stopReason !== "string" || !Object.hasOwn(NORMAL_STOP_REASONS, stopReason)) {
     return false;
   }
-  return !isEstimatedUsage(usage);
+  if (isEstimatedUsage(usage)) return false;
+  return !Object.hasOwn(REQUIRES_GENERATED_OUTPUT, provider) || readUsageOutputTokens(usage) > 0;
 }
 
 /** Reasoning token count from an OpenAI chat, Responses, or flat usage object. */

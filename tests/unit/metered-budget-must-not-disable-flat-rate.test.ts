@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isFlatRateProvider } from "../../src/lib/usage/flatRateProviders.ts";
 
 const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-metered-budget-"));
 process.env.DATA_DIR = TEST_DATA_DIR;
@@ -117,6 +118,24 @@ test("B7: an exhausting run of flat-rate traffic leaves the metered allowance in
 
   for (let i = 0; i < 20; i++) spend(policy.meteredBudgetCost(METERED_PROVIDER, 3));
   assert.equal(policy.checkMeteredBudgetForProvider(KEY, METERED_PROVIDER).allowed, false);
+});
+
+// ── Claude Code subscription is shared across keys: per-key budget still applies ─
+test("Claude Code (claude/cc) traffic is recorded against and gated by the key budget", () => {
+  // Analytics still treat Claude Code as a flat-rate subscription (#10773).
+  assert.equal(isFlatRateProvider("claude"), true);
+  assert.equal(isFlatRateProvider("cc"), true);
+
+  for (const provider of ["claude", "cc", " Claude "]) {
+    assert.equal(policy.consumesMeteredBudget(provider), true, provider);
+    assert.equal(policy.meteredBudgetCost(provider, 4.2), 4.2, provider);
+  }
+
+  giveBudget(10);
+  for (let i = 0; i < 4; i++) spend(policy.meteredBudgetCost("claude", 3));
+  assert.equal(costRules.getCostSummary(KEY).totalCostPeriod, 12);
+  assert.equal(policy.checkMeteredBudgetForProvider(KEY, "claude").allowed, false);
+  assert.equal(policy.checkMeteredBudgetForProvider(KEY, FLAT_RATE_PROVIDER).allowed, true);
 });
 
 // ── Combo classification: a local budget refusal is not an upstream failure ─

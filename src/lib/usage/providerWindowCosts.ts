@@ -21,6 +21,8 @@ import {
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const RECORDED_COST_MATCH_TOLERANCE_MS = 30_000;
+const WEEKLY_MIN_WINDOW_SECONDS = 6 * 24 * 3600;
+const WEEKLY_MAX_WINDOW_SECONDS = 8 * 24 * 3600;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -192,7 +194,7 @@ function getRemainingPercent(quota: JsonRecord): number | null {
   return null;
 }
 
-function scoreWeeklyQuota(name: string): number {
+function scoreWeeklyQuotaName(name: string): number {
   const normalized = name.trim().toLowerCase();
   if (!normalized.includes("weekly") && !normalized.includes("7d")) return Number.NEGATIVE_INFINITY;
 
@@ -202,6 +204,25 @@ function scoreWeeklyQuota(name: string): number {
   if (normalized.includes("sonnet")) score -= 30;
   if (/^(gpt|claude|o\d|gemini|opus|sonnet)\b/.test(normalized)) score -= 20;
   return score;
+}
+
+/**
+ * Codex keeps position-based quota keys (`session` = primary window, `weekly` =
+ * secondary) for routing, so a plan whose only window is 7 days is stored under
+ * `session` with `displayName: "Weekly"` and `windowSeconds: 604800`. The real
+ * window duration, when reported, is authoritative over the key name.
+ */
+function scoreWeeklyQuota(name: string, quota: JsonRecord): number {
+  const nameScore = Math.max(
+    scoreWeeklyQuotaName(name),
+    scoreWeeklyQuotaName(toString(quota.displayName))
+  );
+  const windowSeconds = toNumber(quota.windowSeconds, Number.NaN);
+  if (!Number.isFinite(windowSeconds) || windowSeconds <= 0) return nameScore;
+  if (windowSeconds < WEEKLY_MIN_WINDOW_SECONDS || windowSeconds > WEEKLY_MAX_WINDOW_SECONDS) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  return Math.max(nameScore, 10);
 }
 
 function selectWeeklyWindow(
@@ -233,9 +254,9 @@ function selectWeeklyWindow(
   for (const [entryConnectionId, cache] of cacheEntries) {
     const quotas = toRecord(cache?.quotas);
     for (const [name, rawQuota] of Object.entries(quotas)) {
-      const score = scoreWeeklyQuota(name);
-      if (!Number.isFinite(score)) continue;
       const quota = toRecord(rawQuota);
+      const score = scoreWeeklyQuota(name, quota);
+      if (!Number.isFinite(score)) continue;
       const resetMs = parseResetAt(quota.resetAt, nowMs);
       if (resetMs === null) continue;
       const remainingPercent = getRemainingPercent(quota);

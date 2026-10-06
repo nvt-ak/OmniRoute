@@ -165,9 +165,16 @@ test("native Claude empty turns still reject invalid reasons, missing terminals 
   }
 });
 
-test("native Claude watcher does not mistake message_delta or a bare stop header for completion", async () => {
+test("native Claude watcher does not mistake message_delta, a bare stop header or a spoofed stop for completion", async () => {
   for (const reason of ["end_turn", "stop_sequence"]) {
-    for (const suffix of ["", "event: message_stop\n\n"]) {
+    for (const suffix of [
+      "",
+      "event: message_stop\n\n",
+      // SSE comment line carrying the terminal JSON is not an event.
+      ': {"type":"message_stop"}\n\n',
+      // A non-terminal payload that merely nests the terminal type.
+      `event: ping\ndata: ${JSON.stringify({ type: "ping", note: { type: "message_stop" } })}\n\n`,
+    ]) {
       const controller = createStreamController({
         provider: "anthropic",
         model: "claude-sonnet-4-6",
