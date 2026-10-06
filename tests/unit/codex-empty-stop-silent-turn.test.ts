@@ -44,8 +44,9 @@ async function clientSees(frames: string[], provider: string, format: string) {
   return new Response(watched).text();
 }
 
-// Actual empty final_answer events must stay empty; generated/reasoning token
-// counts (including the 4732 replay's output16/reasoning10) are not answer proof.
+// Live capture 2026-10-06 (watchdog prompt, "silence preferred"): Codex completes
+// with an empty final_answer, status "completed", output 4 / reasoning 0. Trust
+// rests on the upstream completion, never on token counters.
 function silentEvents(usage: object, terminal = "completed") {
   const message = {
     id: "msg_silent",
@@ -150,26 +151,62 @@ async function translate(
   return new Response(watched).text().catch((error: Error) => `THREW ${error.message}`);
 }
 
-for (const usage of reportedUsages) {
+// output0 is not a model answer: it stays a 502 failover in every shape.
+test("Codex completed empty turn with zero generated output still fails over", async () => {
+  const usage = reportedUsages[0];
+  for (const body of [
+    { choices: [{ message: { content: null }, finish_reason: "stop" }], usage },
+    { type: "message", role: "assistant", content: [], stop_reason: "end_turn", usage },
+    { object: "response", status: "completed", output: [], usage },
+  ]) {
+    assert.equal(isEmptyContentResponse(body, { provider: "codex" }), true);
+    assert.equal(detectMalformedNonStream(body, "codex"), "empty_choices");
+    assert.equal((await quality(json(body), false)).valid, false);
+  }
+  for (const reason of ["stop", "end_turn", "stop_sequence"]) {
+    assert.equal(isTrustedEmptyStop("codex", reason, usage), false);
+    assert.equal(isTrustedEmptyStop("codex", reason, undefined), false);
+  }
+  const frames = silentEvents(usage);
+  assert.match(
+    await clientSees(frames, "codex", FORMATS.OPENAI_RESPONSES),
+    /empty content|response\.failed/
+  );
+  assert.equal((await quality(sse(frames), true)).valid, false);
+  for (const format of [FORMATS.CLAUDE, FORMATS.OPENAI]) {
+    const text = await translate(frames, format);
+    assert.equal((await quality(sse([text]), true)).valid, false, format);
+    assert.doesNotMatch(text, /\(empty response\)|"type":"text_delta"/);
+  }
+});
+
+for (const usage of reportedUsages.slice(1)) {
   const label = `output${usage.output_tokens}/reasoning${usage.output_tokens_details.reasoning_tokens}`;
-  test(`Codex ${label} empty normal stops are rejected in every nonstream shape`, async () => {
+  test(`Codex ${label} completed empty normal stops are trusted in every nonstream shape`, async () => {
     const bodies = [
       { choices: [{ message: { content: null }, finish_reason: "stop" }], usage },
       { type: "message", role: "assistant", content: [], stop_reason: "end_turn", usage },
       { object: "response", status: "completed", output: [], usage },
     ];
     for (const body of bodies) {
-      assert.equal(isEmptyContentResponse(body, { provider: "codex" }), true);
-      assert.equal(detectMalformedNonStream(body, "codex"), "empty_choices");
-      assert.equal((await quality(json(body), false)).valid, false);
+      assert.equal(isEmptyContentResponse(body, { provider: "codex" }), false);
+      assert.equal(detectMalformedNonStream(body, "codex"), null);
+      assert.equal((await quality(json(body), false)).valid, true);
     }
     for (const reason of ["stop", "end_turn", "stop_sequence"]) {
-      assert.equal(isTrustedEmptyStop("codex", reason, usage), false);
-      assert.equal(isCleanEmptyClaudeStop(reason, "codex", usage), false);
+      assert.equal(isTrustedEmptyStop("codex", reason, usage), true);
+      // `stop` is the OpenAI spelling; Claude clean stops are end_turn/stop_sequence.
+      assert.equal(isCleanEmptyClaudeStop(reason, "codex", usage), reason !== "stop");
+      assert.equal(isTrustedEmptyStop("codex", reason, { ...usage, estimated: true }), false);
+      assert.equal(isCleanEmptyClaudeStop(reason, "codex", { ...usage, estimated: true }), false);
+    }
+    for (const status of ["incomplete", "failed", "in_progress"]) {
+      const body = { object: "response", status, output: [], usage };
+      assert.equal(isEmptyContentResponse(body, { provider: "codex" }), true, status);
     }
   });
 
-  test(`Codex ${label} empty raw Responses and chat fail watcher and combo`, async () => {
+  test(`Codex ${label} completed empty raw Responses and chat pass watcher and combo`, async () => {
     const frames = silentEvents(usage);
     const chatFrames = [
       `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage })}\n\n`,
@@ -179,25 +216,27 @@ for (const usage of reportedUsages) {
       [frames, FORMATS.OPENAI_RESPONSES],
       [chatFrames, FORMATS.OPENAI],
     ] as const) {
-      assert.match(await clientSees(stream, "codex", format), /empty content|response\.failed/);
-      assert.equal((await quality(sse(stream), true)).valid, false);
+      const seen = await clientSees(stream, "codex", format);
+      assert.equal(seen, stream.join(""), format);
+      assert.equal((await quality(sse(stream), true)).valid, true, format);
     }
   });
 
-  test(`Codex ${label} empty turn fails full Responses transform, watcher and combo`, async () => {
+  test(`Codex ${label} completed empty turn survives full Responses transform, watcher and combo`, async () => {
     for (const format of [FORMATS.CLAUDE, FORMATS.OPENAI]) {
       for (const fragmented of [false, true]) {
         for (const trailingNewline of [false, true]) {
           const text = await translate(silentEvents(usage), format, fragmented, trailingNewline);
-          assert.match(
+          assert.doesNotMatch(
             text,
             /THREW|empty response|empty content|"type":"error"|"finish_reason":"error"/
           );
+          assert.match(text, format === FORMATS.CLAUDE ? /message_stop/ : /\[DONE\]/);
           assert.doesNotMatch(
             text,
             /\(empty response\)|content_block_start|signature_delta|"type":"text_delta"/
           );
-          assert.equal((await quality(sse([text]), true)).valid, false);
+          assert.equal((await quality(sse([text]), true)).valid, true);
         }
       }
     }
@@ -215,6 +254,11 @@ test("unfinished and unsuccessful Codex terminals never become silent success", 
   ]) {
     const frames = silentEvents(reportedUsages[2], terminal);
     assert.equal((await quality(sse(frames), true)).valid, false, terminal);
+    assert.match(
+      await clientSees(frames, "codex", FORMATS.OPENAI_RESPONSES),
+      /empty content|response\.failed/,
+      `watcher/${terminal}`
+    );
     for (const format of [FORMATS.CLAUDE, FORMATS.OPENAI]) {
       const text = await translate(frames, format, true, false);
       assert.equal((await quality(sse([text]), true)).valid, false, `${terminal}/${format}`);
@@ -343,13 +387,13 @@ test("native Claude clean empty stops survive passthrough while combo requires c
   }
 });
 
-test("Claude empty Codex, unfinished and zero-byte passthrough responses are aborted", async () => {
-  for (const [reason, stop] of [
-    ["end_turn", true],
-    ["stop_sequence", true],
-    ["end_turn", false],
-    [null, true],
-    ["zero_bytes", false],
+test("Claude-shape Codex clean stops pass; unfinished, reasonless and zero-byte abort", async () => {
+  for (const [reason, stop, accepted] of [
+    ["end_turn", true, true],
+    ["stop_sequence", true, true],
+    ["end_turn", false, false],
+    [null, true, false],
+    ["zero_bytes", false, false],
   ] as const) {
     const frames =
       reason === "zero_bytes"
@@ -373,8 +417,15 @@ test("Claude empty Codex, unfinished and zero-byte passthrough responses are abo
         body: { messages: [{ role: "user", content: "hi" }] },
       })
     );
-    await assert.rejects(new Response(transformed).text(), /empty response/);
-    assert.equal((await quality(sse(frames), true)).valid, false);
+    if (accepted) {
+      const text = await new Response(transformed).text();
+      assert.match(text, /message_stop/);
+      assert.doesNotMatch(text, /"type":"error"|content_block_start/);
+      assert.equal((await quality(sse(frames), true)).valid, true);
+    } else {
+      await assert.rejects(new Response(transformed).text(), /empty response/);
+      assert.equal((await quality(sse(frames), true)).valid, false);
+    }
   }
 });
 
@@ -387,15 +438,17 @@ test("native Claude clean empty stop still needs a terminal message_stop", async
   assert.equal((await quality(sse(frames), true, "claude")).valid, false);
 });
 
-test("genuine Codex refusal text counts as output, not as an empty-stop exemption", () => {
+test("Codex refusal text counts as output; content_filter without text stays empty", () => {
   for (const refusal of ["I cannot help with that request.", "", " \n\t", null, 1]) {
-    const expectedEmpty = typeof refusal !== "string" || refusal.trim().length === 0;
+    const hasRefusal = typeof refusal === "string" && refusal.trim().length > 0;
     for (const field of ["message", "delta"]) {
       for (const finishReason of ["stop", "content_filter"]) {
         const body = {
           choices: [{ [field]: { content: null, refusal }, finish_reason: finishReason }],
           usage: reportedUsages[2],
         };
+        // A completed normal stop is a trusted silent turn; content_filter is not.
+        const expectedEmpty = finishReason === "content_filter" && !hasRefusal;
         assert.equal(isEmptyContentResponse(body, { provider: "codex" }), expectedEmpty);
       }
     }
@@ -405,7 +458,7 @@ test("genuine Codex refusal text counts as output, not as an empty-stop exemptio
       usage: reportedUsages[2],
       output: [{ type: "message", role: "assistant", content: [{ type: "refusal", refusal }] }],
     };
-    assert.equal(isEmptyContentResponse(response, { provider: "codex" }), expectedEmpty);
+    assert.equal(isEmptyContentResponse(response, { provider: "codex" }), false);
   }
 });
 

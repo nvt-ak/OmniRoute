@@ -278,8 +278,6 @@ function isCompletedResponsesFrame(frame: string): boolean {
   }
   return false;
 }
-const CLAUDE_CONTENT_BLOCK_PATTERN = /"type"\s*:\s*"content_block_(?:start|delta|stop)"/;
-const CLAUDE_MESSAGE_STOP_PATTERN = /"type"\s*:\s*"message_stop"/;
 
 const SSE_FIELD_LINE = /(?:^|\r?\n)\s*(?:data|event):/;
 
@@ -560,14 +558,19 @@ export function createStreamContentWatcher(
         }
       }
     }
-    if (!claudeContentBlock && CLAUDE_CONTENT_BLOCK_PATTERN.test(frame)) claudeContentBlock = true;
-    if (!claudeMessageStop && CLAUDE_MESSAGE_STOP_PATTERN.test(frame)) claudeMessageStop = true;
     for (const line of frame.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed.startsWith("data:")) continue;
       try {
         const parsed: unknown = JSON.parse(trimmed.slice(5).trim());
         if (!isRecord(parsed)) continue;
+        // Lifecycle flags come from the payload's own top-level type, never a
+        // substring match: an SSE comment or a nested field naming
+        // "message_stop" is not a terminal event.
+        if (typeof parsed.type === "string") {
+          if (parsed.type === "message_stop") claudeMessageStop = true;
+          else if (parsed.type.startsWith("content_block_")) claudeContentBlock = true;
+        }
         const response = isRecord(parsed.response) ? parsed.response : null;
         if (parsed.usage && typeof parsed.usage === "object") usage = parsed.usage;
         else if (response?.usage && typeof response.usage === "object") usage = response.usage;

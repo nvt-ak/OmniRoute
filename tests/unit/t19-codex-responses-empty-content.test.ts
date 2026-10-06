@@ -112,11 +112,13 @@ test("completed silent Responses project to Claude without invented text", () =>
   assert.deepEqual(translated.content, []);
   assert.equal(translated.stop_reason, "end_turn");
   assert.deepEqual(translated.usage, { input_tokens: 10, output_tokens: 4 });
-  assert.equal(isEmptyContentResponse(translated, { provider: "codex" }), true);
-  assert.equal(detectMalformedNonStream(translated, "codex"), "empty_choices");
+  // A completed Codex turn with reported usage is a trusted silent answer.
+  assert.equal(isEmptyContentResponse(translated, { provider: "codex" }), false);
+  assert.equal(detectMalformedNonStream(translated, "codex"), null);
+  assert.equal(isEmptyContentResponse(translated, { provider: "opencode" }), true);
 });
 
-test("silent reasoning usage is preserved but cannot prove a usable Claude answer", () => {
+test("zero-output reasoning usage is preserved but does not prove a Codex answer", () => {
   const translated = translateNonStreamingResponse(
     silentResponse({
       usage: {

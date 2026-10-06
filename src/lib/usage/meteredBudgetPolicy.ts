@@ -45,13 +45,24 @@ import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import * as log from "@/sse/utils/logger";
 
 /**
+ * Flat-rate plans that still draw down the API key dollar budget. Claude Code
+ * (`claude`/`cc`) is shared across many API keys through one subscription, so
+ * the per-key budget is the only per-user spend control for it: its estimated
+ * API-equivalent cost must be recorded and enforced. Analytics display keeps
+ * treating it as flat-rate via {@link isFlatRateProvider}.
+ */
+const BUDGETED_FLAT_RATE_PROVIDER_IDS: Readonly<Record<string, true>> = { claude: true, cc: true };
+
+/**
  * Whether a call to this provider draws down the metered dollar allowance.
  *
  * Flat-rate plans are paid for by a subscription the allowance does not
- * govern; everything else — including an unknown provider — is metered.
+ * govern, except {@link BUDGETED_FLAT_RATE_PROVIDER_IDS}; everything else —
+ * including an unknown provider — is metered.
  */
 export function consumesMeteredBudget(providerId: string | null | undefined): boolean {
-  return !isFlatRateProvider(providerId);
+  if (!isFlatRateProvider(providerId)) return true;
+  return BUDGETED_FLAT_RATE_PROVIDER_IDS[String(providerId).trim().toLowerCase()] === true;
 }
 
 /**

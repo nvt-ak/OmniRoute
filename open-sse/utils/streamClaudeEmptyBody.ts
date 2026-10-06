@@ -18,6 +18,7 @@
  */
 
 import { isEstimatedUsage } from "./usageTracking.ts";
+import { isTrustedEmptyStop } from "../services/errorClassifier.ts";
 
 type ClaudeEmptyLifecycleLike = {
   hasError: boolean;
@@ -37,15 +38,16 @@ const CLEAN_EMPTY_STOP_REASONS: Record<string, true> = {
 
 /**
  * Claude SSE clean-stop policy, not a non-streaming or OpenAI exemption.
- * Codex token usage does not make an empty response usable by the client.
+ * Translated Codex turns only reach a clean stop after stream.ts confirmed a
+ * successful upstream Responses completion; estimated usage is never trusted.
  */
 export function isCleanEmptyClaudeStop(
   stopReason: unknown,
   provider?: string | null,
   usage?: unknown
 ): boolean {
-  if (provider === "codex") return false;
   if (provider === "antigravity" && isEstimatedUsage(usage)) return false;
+  if (provider === "codex" && !isTrustedEmptyStop(provider, stopReason, usage)) return false;
   return typeof stopReason === "string" && CLEAN_EMPTY_STOP_REASONS[stopReason] === true;
 }
 

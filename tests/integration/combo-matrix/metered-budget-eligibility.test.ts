@@ -10,8 +10,10 @@
 // dispatched, so they fail if the budget ever regains routing authority or
 // loses its power to stop unbudgeted metered spend.
 //
-// openai is metered. claude (the Claude Code plan) is flat-rate — see
-// FLAT_RATE_SUBSCRIPTION_PROVIDER_IDS in src/lib/usage/flatRateProviders.ts.
+// openai is metered. opencode-go (the OpenCode Go subscription) is flat-rate and
+// exempt from the allowance — see src/lib/usage/flatRateProviders.ts and
+// src/lib/usage/meteredBudgetPolicy.ts. (Claude Code is flat-rate for display
+// but still budgeted, so it cannot stand in for exempt capacity here.)
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createComboRoutingHarness } from "../_comboRoutingHarness.ts";
@@ -29,6 +31,9 @@ const {
 const costRules = await import("../../../src/domain/costRules.ts");
 const providersDb = await import("../../../src/lib/db/providers.ts");
 
+// The recording harness labels upstreams by host; opencode-go dispatches here.
+const FLAT = "host:opencode.ai";
+
 function body(model: string) {
   return { model, stream: false, messages: [{ role: "user", content: `route ${model}` }] };
 }
@@ -43,14 +48,14 @@ async function keyWithBudget({ limitUsd, spentUsd }: { limitUsd: number; spentUs
 
 async function seedMixedCombo(name: string) {
   await seedConnection("openai", { apiKey: "sk-openai-budget" });
-  await seedConnection("claude", { apiKey: "sk-claude-budget" });
+  await seedConnection("opencode-go", { apiKey: "sk-ocgo-budget" });
   await combosDb.createCombo({
     name,
     strategy: "priority",
     config: { maxRetries: 0, retryDelayMs: 0 },
     // Metered first: if the budget ever selected a provider instead of merely
     // filtering, this ordering is what would expose it.
-    models: ["openai/gpt-4o-mini", "claude/claude-sonnet-4-6"],
+    models: ["openai/gpt-4o-mini", "opencode-go/glm-5.2"],
   });
 }
 
@@ -86,7 +91,7 @@ test("B4: with the allowance spent, the metered target is filtered out and norma
   const r = await handleChat(buildRequest({ body: body("b-budget-spent"), authKey: key.key }));
 
   assert.equal(r.status, 200, "flat-rate capacity must still serve the request");
-  assert.deepEqual(h.providersSeen(), ["claude"]);
+  assert.deepEqual(h.providersSeen(), [FLAT]);
   assert.ok(
     !h.providersSeen().includes("openai"),
     "no metered transport may occur once the allowance is spent"
@@ -112,12 +117,12 @@ test("B3: with the allowance spent and only metered candidates, the request fail
 
 test("B5: with the allowance spent and the flat-rate candidate unhealthy, the request fails closed", async () => {
   await seedConnection("openai", { apiKey: "sk-openai-unhealthy" });
-  await seedConnection("claude", { apiKey: "sk-claude-unhealthy", isActive: false });
+  await seedConnection("opencode-go", { apiKey: "sk-ocgo-unhealthy", isActive: false });
   await combosDb.createCombo({
     name: "b-flat-rate-down",
     strategy: "priority",
     config: { maxRetries: 0, retryDelayMs: 0 },
-    models: ["openai/gpt-4o-mini", "claude/claude-sonnet-4-6"],
+    models: ["openai/gpt-4o-mini", "opencode-go/glm-5.2"],
   });
   const key = await keyWithBudget({ limitUsd: 10, spentUsd: 25 });
   h.installRecordingFetch();
@@ -141,14 +146,14 @@ test("B6: once the allowance is raised, the metered target is routed to again", 
     buildRequest({ body: body("b-budget-restored"), authKey: key.key })
   );
   assert.equal(blocked.status, 200);
-  assert.deepEqual(h.providersSeen(), ["claude"]);
+  assert.deepEqual(h.providersSeen(), [FLAT]);
 
   costRules.setBudget(key.id, { dailyLimitUsd: 1000, resetInterval: "daily" });
   const restored = await handleChat(
     buildRequest({ body: body("b-budget-restored"), authKey: key.key })
   );
   assert.equal(restored.status, 200);
-  assert.deepEqual(h.providersSeen(), ["claude", "openai"]);
+  assert.deepEqual(h.providersSeen(), [FLAT, "openai"]);
 });
 
 test("a single metered model outside any combo still fails closed when the allowance is spent", async () => {
@@ -163,16 +168,14 @@ test("a single metered model outside any combo still fails closed when the allow
 });
 
 test("a single FLAT-RATE model outside any combo is served while the allowance is spent", async () => {
-  await seedConnection("claude", { apiKey: "sk-claude-direct" });
+  await seedConnection("opencode-go", { apiKey: "sk-ocgo-direct" });
   const key = await keyWithBudget({ limitUsd: 10, spentUsd: 25 });
   h.installRecordingFetch();
 
-  const r = await handleChat(
-    buildRequest({ body: body("claude/claude-sonnet-4-6"), authKey: key.key })
-  );
+  const r = await handleChat(buildRequest({ body: body("opencode-go/glm-5.2"), authKey: key.key }));
 
   assert.equal(r.status, 200);
-  assert.deepEqual(h.providersSeen(), ["claude"]);
+  assert.deepEqual(h.providersSeen(), [FLAT]);
 });
 
 test("a budget refusal leaves the provider connection healthy — it is a local verdict, not an upstream one", async () => {
@@ -211,24 +214,40 @@ test("a budget refusal leaves the provider connection healthy — it is a local 
 });
 
 test("B7/B8: a served flat-rate request stays visible in telemetry and still does not move the allowance", async () => {
-  await seedConnection("claude", { apiKey: "sk-claude-accounting" });
+  await seedConnection("opencode-go", { apiKey: "sk-ocgo-accounting" });
   const key = await seedApiKey({ name: "accounting" });
   costRules.setBudget(key.id, { dailyLimitUsd: 10, resetInterval: "daily" });
   h.installRecordingFetch();
 
   const before = costRules.getCostSummary(key.id).totalCostPeriod;
-  const r = await handleChat(
-    buildRequest({ body: body("claude/claude-sonnet-4-6"), authKey: key.key })
-  );
+  const r = await handleChat(buildRequest({ body: body("opencode-go/glm-5.2"), authKey: key.key }));
   assert.equal(r.status, 200);
 
   // Observability: the request is still recorded, with its provider and model.
   await h.callLogsDb.waitForCallLogSaves(10_000);
   const logged = await h.getLatestCallLog();
   assert.ok(logged, "flat-rate traffic must not disappear from the request log");
-  assert.equal((logged as { provider?: string }).provider, "claude");
+  assert.equal((logged as { provider?: string }).provider, "opencode-go");
 
   // Budget consumption: unchanged. The subscription is not paid for out of the
   // metered allowance, so the allowance must not move.
   assert.equal(costRules.getCostSummary(key.id).totalCostPeriod, before);
+});
+
+test("Claude Code traffic draws down the API key allowance (shared subscription, per-key budget)", async () => {
+  await seedConnection("claude", { apiKey: "sk-claude-budgeted" });
+  const key = await seedApiKey({ name: "claude-budgeted" });
+  costRules.setBudget(key.id, { dailyLimitUsd: 10, resetInterval: "daily" });
+  h.installRecordingFetch();
+
+  const r = await handleChat(
+    buildRequest({ body: body("claude/claude-sonnet-4-6"), authKey: key.key })
+  );
+  assert.equal(r.status, 200);
+  assert.deepEqual(h.providersSeen(), ["claude"]);
+
+  assert.ok(
+    costRules.getCostSummary(key.id).totalCostPeriod > 0,
+    "Claude Code usage must be recorded against the key budget"
+  );
 });
