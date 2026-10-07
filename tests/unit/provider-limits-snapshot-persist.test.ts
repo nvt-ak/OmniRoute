@@ -3,11 +3,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readFileSync } from "node:fs";
 
+// DB modules read DATA_DIR/API_KEY_SECRET at load time, so they must be imported
+// dynamically after the env is set; static imports would be hoisted above it.
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-snapshot-persist-"));
+process.env.API_KEY_SECRET ??= "test-snapshot-persist-secret";
 
-const { snapshotCacheEntry } = await import("../../src/lib/usage/providerLimits.ts");
+const { snapshotCacheEntry, syncAllProviderLimits, fetchAndPersistProviderLimits } =
+  await import("../../src/lib/usage/providerLimits.ts");
+const providersDb = await import("../../src/lib/db/providers.ts");
 const { setProviderLimitsCache, getProviderLimitsCache } =
   await import("../../src/lib/db/providerLimits.ts");
 const { saveQuotaSnapshot } = await import("../../src/lib/db/quotaSnapshots.ts");
@@ -107,18 +111,68 @@ test("snapshotCacheEntry rejects a snapshot that is not strictly newer than key_
   );
 });
 
-test("both fetch-failure fallback paths persist a fresh snapshot back to key_value", () => {
-  const source = readFileSync(path.join(process.cwd(), "src/lib/usage/providerLimits.ts"), "utf8");
-  // fetchAndPersistProviderLimits (single "Refresh now") must write the snapshot.
-  assert.match(
-    source,
-    /if \(snapshot\) \{\s*setProviderLimitsCache\(connectionId, snapshot\);/,
-    "single-connection fallback must persist a fresh snapshot to key_value"
-  );
-  // syncAllProviderLimits ("Refresh All") must batch the snapshot for persistence.
-  assert.match(
-    source,
-    /if \(snapshot\) \{\s*cacheEntries\.push\(\{ connectionId, entry: snapshot \}\);/,
-    "bulk fallback must batch a fresh snapshot for key_value persistence"
-  );
-});
+// Both "Refresh now" and "Refresh All" receive a cache that the merge already
+// swapped back to the prior entry when the live fetch fails, so the failure must
+// be classified on the raw fetch result or the snapshot fallback never runs.
+for (const entryPoint of ["fetchAndPersistProviderLimits", "syncAllProviderLimits"] as const) {
+  test(`${entryPoint}: a 429 with a usable prior cache persists the fresher snapshot`, async () => {
+    // Context7 surfaces any upstream failure as an error-only `{ message }` result
+    // (no quotas) — the same shape a rate-limited Claude/Codex usage fetch yields.
+    const connection = (await providersDb.createProviderConnection({
+      provider: "context7",
+      authType: "apikey",
+      name: `Snapshot fallback ${entryPoint}`,
+      apiKey: `ctx7-snapshot-${entryPoint}`,
+    })) as { id: string };
+    setProviderLimitsCache(connection.id, {
+      quotas: {
+        session: {
+          used: 10,
+          total: 100,
+          remaining: 90,
+          remainingPercentage: 90,
+          resetAt: null,
+          unlimited: false,
+        },
+      },
+      plan: null,
+      message: null,
+      fetchedAt: "2026-07-08T08:55:00.000Z",
+      source: "manual",
+    });
+    saveQuotaSnapshot({
+      provider: "context7",
+      connection_id: connection.id,
+      window_key: "session",
+      remaining_percentage: 25,
+      is_exhausted: 0,
+      next_reset_at: null,
+      window_duration_ms: null,
+      raw_data: null,
+    });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "rate limited" }), { status: 429 })) as typeof fetch;
+    try {
+      if (entryPoint === "fetchAndPersistProviderLimits") {
+        await fetchAndPersistProviderLimits(connection.id, "manual");
+      } else {
+        const result = await syncAllProviderLimits({ source: "manual" });
+        const served = result.caches[connection.id]?.quotas as Record<
+          string,
+          { remainingPercentage: number }
+        >;
+        assert.equal(served.session.remainingPercentage, 25, "Refresh All must serve the snapshot");
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const persisted = getProviderLimitsCache(connection.id)?.quotas as Record<
+      string,
+      { remainingPercentage: number }
+    >;
+    assert.equal(persisted.session.remainingPercentage, 25, "the snapshot must reach key_value");
+  });
+}

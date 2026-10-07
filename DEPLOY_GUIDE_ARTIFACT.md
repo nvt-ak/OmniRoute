@@ -13,7 +13,8 @@
 1. Vào repo GitHub → tab **Actions**.
 2. Chọn workflow **"Build npm artifact (fork)"** (bên trái).
 3. Bấm **Run workflow**:
-   - **ref**: `fix/cache` (mặc định)
+   - **Use workflow from**: chọn nhánh chứa các bản sửa (ví dụ `fix/cache`).
+   - **ref**: để trống để dùng nhánh đã chọn; hoặc nhập commit SHA cần build.
    - **Clean build**: để TẮT (chỉ bật khi nghi cache lỗi)
    - → **Run workflow**.
 4. Đợi build xong (~5-10 phút, nhanh hơn nhờ cache). Workflow tự gắn file vào
@@ -170,6 +171,32 @@ pm2 restart omniroute
 ```
 
 > `~/.omniroute` (config + DB) nguyên vẹn suốt quá trình update.
+
+### Kiểm tra bản sửa Anthropic và giá custom model
+
+Trước khi build artifact, chạy `npm run test:coverage` trên source; gate yêu cầu
+ít nhất 60% statements, lines, functions và branches. Workflow in commit đã build
+và kiểm tra `package/dist/BUILD_SHA` trong tarball. Nếu cần pin bản triển khai,
+thay `build-latest` trong URL tải bằng `build-<short-sha>` của release tương ứng.
+
+Sau khi cài artifact và restart:
+
+1. Vào `/dashboard/providers/anthropic`, thêm Console API key bằng **Check** rồi
+   **Save**; chờ test connection thành công. Không cần tạo custom node cho API
+   chính thức. Claude OAuth (`cc/`) là provider khác.
+2. Gọi `GET /v1/models` bằng gateway key và xác nhận model
+   `anthropic/claude-haiku-5-5`; gọi `/v1/chat/completions` với model đó để kiểm tra
+   generation, không chỉ kiểm tra danh sách model.
+3. Với custom node, ưu tiên giá riêng đã cấu hình và giá DB khớp tên model.
+   Nếu không khớp, bản sửa dùng giá ước tính Sonnet 5.5 **$2 input / $10 output
+   trên 1 triệu token** để tính usage/quota; không bỏ qua chi phí vì thiếu giá.
+   Cấu hình giá thực của gateway để thay thế ước tính.
+4. Kiểm tra dashboard usage và quota ngày/tuần. Dữ liệu lịch sử còn trong cửa sổ
+   quota được tính lại theo giá đang resolve; không cần xoá lịch sử hoặc bỏ quota
+   để khắc phục lỗi thiếu pricing. Haiku 5.5 có mức giá riêng cho prompt trên 100k.
+
+Các thay đổi source chỉ có hiệu lực trên server sau khi build/cài artifact mới;
+không sửa trực tiếp bundle `dist/` hay xoá dữ liệu `~/.omniroute`.
 
 ---
 

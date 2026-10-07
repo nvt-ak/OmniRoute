@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
 import {
-  IMAGE_PROVIDERS,
   parseImageModel,
   getAllImageModels,
   isRegisteredImageModel,

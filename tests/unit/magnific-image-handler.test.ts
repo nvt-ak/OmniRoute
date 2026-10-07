@@ -3,11 +3,8 @@ import assert from "node:assert/strict";
 import dns from "node:dns";
 
 import { handleImageGeneration } from "../../open-sse/handlers/imageGeneration.ts";
-import {
-  IMAGE_PROVIDERS,
-  getImageProvider,
-  parseImageModel,
-} from "../../open-sse/config/imageRegistry.ts";
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
+import { getImageProvider, parseImageModel } from "../../open-sse/config/imageRegistry.ts";
 import { APIKEY_PROVIDERS, resolveProviderId } from "../../src/shared/constants/providers.ts";
 import { IMAGE_ONLY_PROVIDER_IDS } from "../../src/shared/constants/providers.ts";
 import { connectionBelongsToProviderPage } from "../../src/app/(dashboard)/dashboard/providers/providerPageUtils.ts";

@@ -1355,28 +1355,26 @@ export async function syncAllProviderLimits(
 
   const recordResult = (
     connectionId: string,
-    result: PromiseSettledResult<{ connectionId: string; cache: ProviderLimitsCacheEntry }>
+    result: PromiseSettledResult<{
+      connectionId: string;
+      cache: ProviderLimitsCacheEntry;
+      failed: boolean;
+    }>
   ) => {
     if (result.status === "fulfilled") {
-      const { cache } = result.value;
+      const { cache, failed } = result.value;
       // Don't persist error-only entries; show freshest snapshot, then prior
       // cache, then pass through — so a rate-limited manual refresh still
       // surfaces near-current data instead of an hours-old key_value entry.
-      if (!cache.quotas && cache.message) {
+      if (failed) {
         const previous = getProviderLimitsCache(connectionId);
         const snapshot = snapshotCacheEntry(connectionId, previous);
-        const fallback = snapshot ?? previous;
-        if (fallback?.quotas && Object.keys(fallback.quotas).length > 0) {
-          caches[connectionId] = fallback;
-          // A non-null snapshot is strictly newer than key_value (see
-          // snapshotCacheEntry), so batch-persist it; otherwise key_value stays
-          // frozen and a tab reload reverts to stale data despite the refresh.
-          if (snapshot) {
-            cacheEntries.push({ connectionId, entry: snapshot });
-          }
-        } else {
-          caches[connectionId] = cache;
-        }
+        // A non-null snapshot is strictly newer than key_value (see
+        // snapshotCacheEntry), so batch-persist it; otherwise key_value stays
+        // frozen and a tab reload reverts to stale data despite the refresh.
+        if (snapshot) cacheEntries.push({ connectionId, entry: snapshot });
+        // `cache` is already the prior entry when the merge kept usable data.
+        caches[connectionId] = snapshot ?? cache;
         return;
       }
       cacheEntries.push({ connectionId, entry: cache });
@@ -1398,7 +1396,9 @@ export async function syncAllProviderLimits(
     });
     const nextCache = toProviderLimitsCacheEntry(usage, source);
     const cache = mergeProviderLimitsCacheEntry(connection.provider, nextCache, existingCache);
-    return { connectionId: connection.id, cache };
+    // Classify on the raw fetch: the merge may already have swapped in the prior entry.
+    const failed = !nextCache.quotas && Boolean(nextCache.message);
+    return { connectionId: connection.id, cache, failed };
   };
 
   // OAuth connections are processed STRICTLY SEQUENTIALLY (chunk size 1) with a

@@ -68,6 +68,10 @@ function partsOf(item: TextItem, kind: TextKind): Map<number | null, TextPart> {
 function dropsCommentary(state: TextState): boolean {
   return state.dropResponsesCommentary !== false;
 }
+/** Responses output messages are assistant-authored; some providers omit the role. */
+function isAssistantMessage(snapshot: Snapshot | null): snapshot is Snapshot {
+  return snapshot?.type === "message" && (snapshot.role ?? "assistant") === "assistant";
+}
 function mergeParts(target: TextPart, source: TextPart): void {
   // Fragments from aliases may interleave before an item event links their IDs.
   for (const fragment of source.fragments) target.fragments.push(fragment);
@@ -252,7 +256,7 @@ export function bindResponsesTextItem(
   outputIndex: unknown
 ): void {
   const item = object(value);
-  if (item?.type === "message" && item.role === "assistant") {
+  if (isAssistantMessage(item)) {
     resolveItem(tracker(state), { item_id: item.id, output_index: outputIndex, phase: item.phase });
   }
 }
@@ -302,7 +306,7 @@ export function synthesizeTextItemSnapshot(
 ): Record<string, unknown>[] {
   const t = tracker(state);
   const snapshot = object(value);
-  if (t.closed || snapshot?.type !== "message" || snapshot.role !== "assistant") return [];
+  if (t.closed || !isAssistantMessage(snapshot)) return [];
   const item = resolveItem(
     t,
     { item_id: snapshot.id, output_index: outputIndex, phase: snapshot.phase },
@@ -335,7 +339,7 @@ export function recoverTextSnapshotsByOutputIndex(
       snapshot: object(value),
       outputIndex: position,
     }))
-    .filter(({ snapshot }) => snapshot?.type === "message" && snapshot.role === "assistant");
+    .filter(({ snapshot }) => isAssistantMessage(snapshot));
   // Bind all identities before recovering anything: an anonymous prefix cannot be
   // assigned to the first of multiple messages merely because it was visited first.
   const resolved = items.map(({ snapshot, outputIndex }) => ({

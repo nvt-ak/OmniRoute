@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 const { validateProviderApiKey } = await import("../../src/lib/providers/validation.ts");
 
 const originalFetch = globalThis.fetch;
-const PROBE_URL = "https://api.anthropic.com/v1/messages?beta=true";
+const PROBE_URL = "https://api.anthropic.com/v1/models";
 const KEY = "sk-ant-api-key-fixture";
 
 test.afterEach(() => {
@@ -31,11 +31,12 @@ function mockProbe(status: number, body: string) {
   globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
     const target = String(url);
     if (target === PROBE_URL) {
+      assert.equal(init?.method || "GET", "GET");
+      assert.equal(init?.body, undefined);
       seen.push(toPlainHeaders(init?.headers));
       return new Response(body, { status });
     }
-    // best-effort GET /models probe: its result is ignored
-    return new Response("{}", { status: 404 });
+    assert.fail(`Unexpected validation request: ${target}`);
   };
   return seen;
 }
@@ -64,14 +65,15 @@ test("a key not scoped to a workspace fails the test and names the header", asyn
   assert.match(String(result.error), /anthropic-workspace-id/);
 });
 
-test("any other 400 still counts as auth passed", async () => {
+test("an unrecognized native catalog 400 fails validation", async () => {
   mockProbe(400, anthropicError("max_tokens: must be greater than 1"));
   const result = await validateProviderApiKey({ provider: "anthropic", apiKey: KEY });
-  assert.equal(result.valid, true);
+  assert.equal(result.valid, false);
+  assert.match(String(result.error), /rejected validation request \(400\)/);
 });
 
 test("the probe sends the connection's custom headers but they cannot replace auth", async () => {
-  const seen = mockProbe(200, JSON.stringify({ id: "msg_fixture" }));
+  const seen = mockProbe(200, JSON.stringify({ data: [], has_more: false }));
   const result = await validateProviderApiKey({
     provider: "anthropic",
     apiKey: KEY,
@@ -95,13 +97,13 @@ test("the probe sends the connection's custom headers but they cannot replace au
 });
 
 test("without custom headers the probe headers are unchanged", async () => {
-  const seen = mockProbe(200, JSON.stringify({ id: "msg_fixture" }));
+  const seen = mockProbe(200, JSON.stringify({ data: [], has_more: false }));
   await validateProviderApiKey({ provider: "anthropic", apiKey: KEY });
   assert.ok(!Object.keys(seen[0]).some((k) => k.toLowerCase() === "anthropic-workspace-id"));
   assert.equal(seen[0]["x-api-key"], KEY);
 });
 
-test("a 400 body that never ends does not hang the test", async () => {
+test("a native catalog 400 body that never ends fails without hanging", async () => {
   globalThis.fetch = async (url: string | URL | Request) => {
     if (String(url) !== PROBE_URL) return new Response("{}", { status: 404 });
     const stalled = new ReadableStream<Uint8Array>({ start() {} });
@@ -109,11 +111,12 @@ test("a 400 body that never ends does not hang the test", async () => {
   };
   const started = Date.now();
   const result = await validateProviderApiKey({ provider: "anthropic", apiKey: KEY });
-  assert.equal(result.valid, true);
+  assert.equal(result.valid, false);
+  assert.match(String(result.error), /rejected validation request \(400\)/);
   assert.ok(Date.now() - started < 10_000);
 });
 
-test("only the first KB of a huge 400 body are read", async () => {
+test("only the first 8 KB of a huge native catalog 400 body are inspected", async () => {
   globalThis.fetch = async (url: string | URL | Request) => {
     if (String(url) !== PROBE_URL) return new Response("{}", { status: 404 });
     const filler = new TextEncoder().encode("x".repeat(16 * 1024));
@@ -129,8 +132,37 @@ test("only the first KB of a huge 400 body are read", async () => {
   };
   const started = Date.now();
   const result = await validateProviderApiKey({ provider: "anthropic", apiKey: KEY });
-  assert.equal(result.valid, true);
+  assert.equal(result.valid, false);
+  assert.match(String(result.error), /rejected validation request \(400\)/);
   assert.ok(Date.now() - started < 2_000);
+});
+
+test("the native catalog error prefix is capped in bytes, not decoded characters", async () => {
+  const body = "é".repeat(4096) + anthropicError("Your credit balance is too low");
+  mockProbe(400, body);
+  const result = await validateProviderApiKey({ provider: "anthropic", apiKey: KEY });
+  assert.equal(result.valid, false);
+  assert.match(String(result.error), /rejected validation request \(400\)/);
+});
+
+test("an unrecognized compatible message 400 still counts as auth passed", async () => {
+  const requests: string[] = [];
+  globalThis.fetch = async (url, init = {}) => {
+    requests.push(String(url));
+    if (String(url) === "https://anthropic-proxy.example/v1/models") {
+      return new Response("{}", { status: 404 });
+    }
+    assert.equal(String(url), "https://anthropic-proxy.example/v1/messages?beta=true");
+    assert.equal(init.method, "POST");
+    return new Response(anthropicError("max_tokens: must be greater than 1"), { status: 400 });
+  };
+  const result = await validateProviderApiKey({
+    provider: "anthropic",
+    apiKey: KEY,
+    providerSpecificData: { baseUrl: "https://anthropic-proxy.example/v1/messages" },
+  });
+  assert.equal(result.valid, true);
+  assert.equal(requests.length, 2);
 });
 
 test("an anthropic-compatible node pointed at Anthropic gets the same key errors", async () => {

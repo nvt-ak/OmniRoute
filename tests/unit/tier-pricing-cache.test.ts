@@ -90,3 +90,42 @@ test("sync tier reflects a DB price write without restart", async () => {
     await resetPricing("openai", "gpt-9-never-existed");
   }
 });
+
+test("sync tier refresh merges stored pricing layers and removes deleted overrides", () => {
+  const db = core.getDbInstance();
+  const provider = "tier-snapshot-layer-test";
+  const model = "stored-only-model";
+  const write = db.prepare(
+    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)"
+  );
+  const remove = db.prepare("DELETE FROM key_value WHERE namespace = ? AND key = ?");
+  const namespaces = ["pricing_synced", "models_dev_pricing", "pricing"];
+  try {
+    write.run("pricing_synced", provider, JSON.stringify({ [model]: { input: 8, output: 12 } }));
+    write.run(
+      "models_dev_pricing",
+      provider,
+      JSON.stringify({ [model]: { input: 0.2, output: 0.4 } })
+    );
+    write.run("pricing", provider, JSON.stringify({ [model]: { input: 0, output: 0 } }));
+    clearTierCache();
+    assert.equal(classifyTier(provider, model).tier, "free");
+
+    remove.run("pricing", provider);
+    clearTierCache();
+    const catalog = classifyTier(provider, model);
+    assert.equal(catalog.tier, "cheap");
+    assert.equal(catalog.costPer1MInput, 0.2);
+    assert.equal(catalog.costPer1MOutput, 0.4);
+
+    remove.run("models_dev_pricing", provider);
+    clearTierCache();
+    const synced = classifyTier(provider, model);
+    assert.equal(synced.tier, "premium");
+    assert.equal(synced.costPer1MInput, 8);
+    assert.equal(synced.costPer1MOutput, 12);
+  } finally {
+    for (const namespace of namespaces) remove.run(namespace, provider);
+    clearTierCache();
+  }
+});

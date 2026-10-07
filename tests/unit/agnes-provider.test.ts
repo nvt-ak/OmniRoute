@@ -11,8 +11,9 @@ const { APIKEY_PROVIDERS } = await import("../../src/shared/constants/providers.
 const { VIDEO_PROVIDER_IDS } = await import("../../src/shared/constants/providers.ts");
 const { REGISTRY: providerRegistry, getRegistryModelThinkingEfforts } =
   await import("../../open-sse/config/providerRegistry.ts");
-const { IMAGE_PROVIDERS, getAllImageModels } =
-  await import("../../open-sse/config/imageRegistry.ts");
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
+// Load runtime routing after DATA_DIR is isolated; static imports initialize the DB too early.
+const { getAllImageModels } = await import("../../open-sse/config/imageRegistry.ts");
 const { VIDEO_PROVIDERS, getAllVideoModels } =
   await import("../../open-sse/config/videoRegistry.ts");
 const { FREE_MODEL_BUDGETS } = await import("../../open-sse/config/freeModelCatalog.ts");

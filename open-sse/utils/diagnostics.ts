@@ -236,8 +236,10 @@ export function detectMalformedNonStream(
       });
     if (
       !hasOutput &&
-      !(isSuccessfulResponsesCompletion(body) &&
-        (trustedEmptyTurn || isTrustedEmptyStop(provider, "stop", body.usage)))
+      !(
+        isSuccessfulResponsesCompletion(body) &&
+        (trustedEmptyTurn || isTrustedEmptyStop(provider, "stop", body.usage))
+      )
     )
       return "empty_choices";
     const status = typeof body.status === "string" ? body.status : "";
@@ -325,7 +327,7 @@ export function detectMalformedNonStream(
     if (
       stopReason === "refusal" &&
       content.length === 0 &&
-      body.role === "assistant" &&
+      (body.role === undefined || body.role === "assistant") &&
       !("error" in body)
     ) {
       return null;
@@ -345,12 +347,7 @@ export function detectMalformedNonStream(
       (stopReason === "end_turn" || stopReason === "stop_sequence")
     )
       return null;
-    if (
-      stopReason === "max_tokens" ||
-      stopReason === "tool_use" ||
-      stopReason === "length" ||
-      stopReason === "refusal"
-    )
+    if (stopReason === "max_tokens" || stopReason === "tool_use" || stopReason === "length")
       return null;
     if (content.length === 0 && isTrustedEmptyStop(provider, stopReason, body.usage)) return null;
     // content:[] with no stop_reason at all is non-terminal, not empty (#9971).
@@ -366,7 +363,7 @@ export function detectMalformedNonStream(
     const c = choice as Record<string, unknown>;
     const msg = c?.message as Record<string, unknown> | undefined;
     if (typeof msg?.content === "string" && (msg.content as string).length > 0) return true;
-    if (typeof msg?.refusal === "string" && msg.refusal.length > 0) return true;
+    if (typeof msg?.refusal === "string" && msg.refusal.trim().length > 0) return true;
     // #5559: some OpenAI-compatible upstreams (e.g. Cline via OAuth) return
     // `message.content` as an array of Anthropic-style content blocks rather than
     // a plain string. An array with at least one non-empty text block is real

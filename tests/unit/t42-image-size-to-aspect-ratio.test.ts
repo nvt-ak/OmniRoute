@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 const { mapImageSize } = await import("../../open-sse/translator/image/sizeMapper.ts");
 const { handleImageGeneration } = await import("../../open-sse/handlers/imageGeneration.ts");
-const { IMAGE_PROVIDERS } = await import("../../open-sse/config/imageRegistry.ts");
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
 
 test("T42: size mapper converts OpenAI sizes and preserves direct aspect ratios", () => {
   assert.equal(mapImageSize("1024x1024"), "1:1");

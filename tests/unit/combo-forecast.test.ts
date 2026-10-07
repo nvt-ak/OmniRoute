@@ -12,6 +12,7 @@ const ORIGINAL_JWT_SECRET = process.env.JWT_SECRET;
 
 process.env.DATA_DIR = TEST_DATA_DIR;
 
+// DB imports intentionally follow DATA_DIR so forecast fixtures never use operator storage.
 const core = await import("../../src/lib/db/core.ts");
 const combosDb = await import("../../src/lib/db/combos.ts");
 const settingsDb = await import("../../src/lib/db/settings.ts");
@@ -258,4 +259,54 @@ test("combo forecast reports credit-metered providers as unpriced, not as a zero
   assert.equal(forecast.combos.length, 1);
   assert.equal(forecast.combos[0].history.costUsd, 0);
   assert.equal(forecast.combos[0].dataQuality.pricingCoveragePct, 0);
+});
+
+test("Haiku forecast prices request-length tiers without duplicating public targets", async () => {
+  const comboInput = {
+    name: "combo-forecast-haiku-tiers",
+    strategy: "priority",
+    models: [
+      {
+        kind: "model",
+        providerId: "anthropic",
+        model: "anthropic/claude-haiku-5-5",
+        connectionId: "forecast-haiku-connection",
+        label: "Haiku tier forecast",
+      },
+    ],
+  };
+  const combo = await combosDb.createCombo(comboInput);
+  const step = normalizeComboStep(comboInput.models[0], { comboName: comboInput.name, index: 0 });
+  const now = Date.parse("2026-10-08T20:00:00.000Z");
+  for (const [index, input] of [100_000, 100_000, 100_001].entries()) {
+    await callLogs.saveCallLog({
+      id: `combo-forecast-haiku-${index}`,
+      timestamp: "2026-10-08T12:00:00.000Z",
+      status: 200,
+      model: "anthropic/claude-haiku-5-5",
+      requestedModel: comboInput.name,
+      provider: "anthropic",
+      connectionId: "forecast-haiku-connection",
+      tokens: { prompt_tokens: input, completion_tokens: 101 },
+      comboName: comboInput.name,
+      comboStepId: step.id,
+      comboExecutionKey: step.id,
+    });
+  }
+  const response = await comboForecast.buildComboForecastResponse({
+    range: "7d",
+    horizon: "7d",
+    comboId: String(combo.id),
+    now,
+  });
+  const forecast = response.combos[0];
+  const expectedCost = (2 * (100_000 * 0.1 + 101 * 0.5) + 100_001 * 0.5 + 101 * 2.5) / 1_000_000;
+  assert.equal(response.combos.length, 1);
+  assert.equal(forecast.targets.length, 1);
+  assert.equal(forecast.history.requests, 3);
+  assert.equal(forecast.history.inputTokens, 300_001);
+  assert.equal(forecast.history.costUsd, expectedCost);
+  assert.equal(forecast.targets[0].history.requests, 3);
+  assert.equal(forecast.targets[0].history.costUsd, expectedCost);
+  assert.equal(forecast.dataQuality.pricingCoveragePct, 100);
 });

@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistry.ts";
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
 import { getExecutor } from "../../open-sse/executors/index.ts";
 import { WEB_COOKIE_PROVIDERS } from "../../src/shared/constants/providers/web-cookie.ts";
 import { WEB_SESSION_CREDENTIAL_REQUIREMENTS } from "../../src/shared/providers/webSessionCredentials.ts";

@@ -7,7 +7,7 @@ import {
   handleMaxaiImageGeneration,
   MAXAI_IMAGE_PATH,
 } from "../../open-sse/handlers/imageGeneration/providers/maxaiImage.ts";
-import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistry.ts";
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
 import { __setMaxaiConstantsForTest } from "../../open-sse/executors/maxai/constantsStore.ts";
 import { MAXAI_BASE_URL } from "../../open-sse/executors/maxai/protocol.ts";
 import { MOCK_CONSTANTS } from "./helpers/maxaiMockConstants.ts";

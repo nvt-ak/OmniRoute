@@ -22,7 +22,9 @@ process.on("exit", () => {
   (dns.promises as { lookup: unknown }).lookup = originalDnsLookup;
 });
 
-const { IMAGE_PROVIDERS, parseImageModel, getAllImageModels } =
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
+// Load runtime routing after DATA_DIR is isolated; static imports initialize the DB too early.
+const { parseImageModel, getAllImageModels } =
   await import("../../open-sse/config/imageRegistry.ts");
 const { handleImageGeneration } = await import("../../open-sse/handlers/imageGeneration.ts");
 const { setPinnedFetchTestOverride } = await import("../../src/shared/network/remoteImageFetch.ts");

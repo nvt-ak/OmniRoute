@@ -69,6 +69,22 @@ test("non-streaming: an empty Claude refusal is not an empty-content failure", (
   );
 });
 
+test("non-streaming: role-optional refusals still reject malformed and error envelopes", () => {
+  const refusal = { type: "message", content: [], stop_reason: "refusal" };
+  assert.equal(isEmptyContentResponse({ ...refusal, role: "assistant" }), false);
+  for (const body of [
+    { ...refusal, role: "user" },
+    { ...refusal, role: null },
+    { ...refusal, type: "error" },
+    { ...refusal, type: undefined },
+    { ...refusal, error: { type: "api_error", message: "upstream failure" } },
+    { ...refusal, error: null },
+  ]) {
+    assert.equal(isEmptyContentResponse(body), true);
+    assert.equal(isEmptyContentResponse(body, { trustedEmptyTurn: true }), true);
+  }
+});
+
 test("non-streaming: an empty Claude refusal is not a malformed 200", () => {
   assert.equal(
     detectMalformedNonStream({

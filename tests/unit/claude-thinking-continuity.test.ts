@@ -270,6 +270,28 @@ test("Responses client: end-to-end claude→responses stream then responses→cl
   assert.equal(toolUse?.id, "toolu_02RESP");
 });
 
+test("Responses client: direct stream capture retains signed and redacted blocks in order", () => {
+  const state = { ...initState(FORMATS.OPENAI_RESPONSES), provider: "claude" };
+  for (const event of claudeToolTurnEvents({ withRedacted: true })) {
+    translateResponse(FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES, event, state);
+  }
+  assert.deepEqual(
+    assistantTurn(translateChatTurn(chatHistory())).content.slice(0, 2).map(stripCacheControl),
+    [
+      { type: "thinking", thinking: THINKING_TEXT, signature: SIGNATURE },
+      { type: "redacted_thinking", data: "REDACTED_OPAQUE_DATA" },
+    ]
+  );
+});
+
+test("Responses client: unsigned direct stream thinking is never stored", () => {
+  const state = { ...initState(FORMATS.OPENAI_RESPONSES), provider: "claude" };
+  for (const event of claudeToolTurnEvents({ withSignature: false })) {
+    translateResponse(FORMATS.CLAUDE, FORMATS.OPENAI_RESPONSES, event, state);
+  }
+  assert.equal(store.getClaudeThinkingStoreSizeForTests(), 0);
+});
+
 test("different model: nothing is restored (falls back to the #5312 placeholder)", () => {
   streamClaudeToChat(claudeToolTurnEvents());
 

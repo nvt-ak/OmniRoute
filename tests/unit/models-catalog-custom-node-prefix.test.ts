@@ -7,12 +7,14 @@ import test from "node:test";
 const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-custom-node-prefix-"));
 process.env.DATA_DIR = TEST_DATA_DIR;
 
+// Storage modules must load after DATA_DIR to exercise an isolated module boundary.
 const aliasesDb = await import("../../src/lib/db/models/aliases.ts");
 const core = await import("../../src/lib/db/core.ts");
 const modelsDb = await import("../../src/lib/db/models.ts");
 const providersDb = await import("../../src/lib/db/providers.ts");
 const modelsCatalog = await import("../../src/app/api/v1/models/catalog.ts");
 const modelsRoute = await import("../../src/app/api/v1/models/route.ts");
+const modelResolver = await import("../../src/sse/services/model.ts");
 
 const NODE_ID = "openai-compatible-chat-550e8400-e29b-41d4-a716-446655440000";
 const PREFIX = "infrex";
@@ -53,11 +55,15 @@ async function seedCustomNode(): Promise<void> {
     },
   });
 
-  await modelsDb.replaceSyncedAvailableModelsForConnection(
-    NODE_ID,
-    (connection as { id: string }).id,
-    [{ id: "synced-model", source: "imported", supportedEndpoints: ["chat"] }]
+  assert.ok(
+    connection &&
+      typeof connection === "object" &&
+      "id" in connection &&
+      typeof connection.id === "string"
   );
+  await modelsDb.replaceSyncedAvailableModelsForConnection(NODE_ID, connection.id, [
+    { id: "synced-model", source: "imported", supportedEndpoints: ["chat"] },
+  ]);
   await modelsDb.addCustomModel(NODE_ID, "custom-model", "Custom Model");
   await aliasesDb.setModelAlias("alias-backed-model", `${NODE_ID}/alias-backed-model`);
 }
@@ -107,3 +113,47 @@ test("canonical mode keeps custom node models under their configured prefix", as
 test("dual mode exposes each custom node model once under its configured prefix", async () => {
   assertCustomNodeModels(await getCatalogIds("dual"));
 });
+
+for (const type of ["openai-compatible", "anthropic-compatible"] as const) {
+  test(`${type} without a prefix publishes models that route back to the node`, async () => {
+    const nodeId = `${type}-550e8400-e29b-41d4-a716-446655440001`;
+    await providersDb.createProviderNode({
+      id: nodeId,
+      type,
+      // A display name must not shadow the built-in Anthropic provider.
+      name: "Anthropic",
+      prefix: null,
+      baseUrl: "https://proxy.example.com",
+    });
+    const connection = await providersDb.createProviderConnection({
+      provider: nodeId,
+      authType: "apikey",
+      name: "main",
+      apiKey: "test-key",
+      isActive: true,
+      testStatus: "active",
+      providerSpecificData: { baseUrl: "https://proxy.example.com" },
+    });
+    assert.ok(
+      connection &&
+        typeof connection === "object" &&
+        "id" in connection &&
+        typeof connection.id === "string"
+    );
+    await modelsDb.replaceSyncedAvailableModelsForConnection(nodeId, connection.id, [
+      { id: "synced-model", supportedEndpoints: ["chat"] },
+    ]);
+    await modelsDb.addCustomModel(nodeId, "custom-model", "Custom Model");
+    await aliasesDb.setModelAlias("node-alias", `${nodeId}/alias-backed-model`);
+
+    const ids = await getCatalogIds("dual");
+    for (const model of ["synced-model", "custom-model", "alias-backed-model"]) {
+      const publishedId = `${nodeId}/${model}`;
+      assert.ok(ids.includes(publishedId), `missing routable model ${publishedId}`);
+      assert.equal(ids.includes(`anthropic/${model}`), false);
+      const resolved = await modelResolver.getModelInfo(publishedId);
+      assert.equal(resolved.provider, nodeId);
+      assert.equal(resolved.model, model);
+    }
+  });
+}

@@ -4,7 +4,8 @@ import {
   EMBEDDING_PROVIDERS,
   getEmbeddingProvider,
 } from "../../open-sse/config/embeddingRegistry.ts";
-import { IMAGE_PROVIDERS, getImageProvider } from "../../open-sse/config/imageRegistry.ts";
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
+import { getImageProvider } from "../../open-sse/config/imageRegistry.ts";
 
 describe("vercel-ai-gateway media registry entries (upstream #1704)", () => {
   describe("embeddingRegistry — vercel-ai-gateway", () => {
@@ -32,7 +33,10 @@ describe("vercel-ai-gateway media registry entries (upstream #1704)", () => {
 
   describe("imageRegistry — vercel-ai-gateway", () => {
     it("is registered in IMAGE_PROVIDERS", () => {
-      assert.ok(IMAGE_PROVIDERS["vercel-ai-gateway"], "vercel-ai-gateway should be in IMAGE_PROVIDERS");
+      assert.ok(
+        IMAGE_PROVIDERS["vercel-ai-gateway"],
+        "vercel-ai-gateway should be in IMAGE_PROVIDERS"
+      );
     });
 
     it("resolves vercel-ai-gateway image provider config", () => {

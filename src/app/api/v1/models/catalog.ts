@@ -436,6 +436,8 @@ async function buildUnifiedModelsResponseCore(
     const nodeIdToProviderType: Record<string, string> = {};
     const nodeApiTypes = indexNodeApiTypes(providerNodes);
     for (const node of providerNodes) {
+      // #9416: nodes without an explicit prefix retain the public name slug used
+      // by the release catalog instead of exposing their internal UUID.
       const resolvedPrefix =
         node.prefix?.trim() ||
         node.name

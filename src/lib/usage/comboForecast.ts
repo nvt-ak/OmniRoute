@@ -108,7 +108,12 @@ async function attachCosts(rows: ComboForecastUsageRow[]): Promise<CostedUsageRo
         cacheCreation: row.cacheCreationTokens,
         reasoning: row.reasoningTokens,
       },
-      { provider: row.provider, model: row.model, serviceTier: "standard" }
+      {
+        provider: row.provider,
+        model: row.model,
+        serviceTier: "standard",
+        pricingInputTokens: row.pricingInputTokens,
+      }
     );
     // A credit-metered provider is billed by the credits the upstream reports, and
     // `call_logs` does not carry them: there is no token tariff to forecast from. The

@@ -5,6 +5,7 @@ import { getModelInfoCore } from "../../open-sse/services/model.ts";
 import { REGISTRY } from "../../open-sse/config/providerRegistry.ts";
 import { FREE_MODEL_BUDGETS } from "../../open-sse/config/freeModelCatalog.data.ts";
 import { getStaticModelsForProvider } from "../../src/lib/providers/staticModels.ts";
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
 
 test("T28: gemini AI Studio catalog includes current preview models", () => {
   // Gemini (AI Studio) carries a small hardcoded fallback for first-run UX when no
@@ -90,7 +91,6 @@ test("T28: retired Qwen ids stay absent while official Qwen Cloud providers rema
 });
 
 test("T28: lmarena registry seeds Direct-chat Text/search; image models in IMAGE_PROVIDERS", async () => {
-  const { IMAGE_PROVIDERS } = await import("../../open-sse/config/imageRegistry.ts");
   const lmarenaIds = REGISTRY.lmarena.models.map((m) => m.id);
   const imageIds = (IMAGE_PROVIDERS.lmarena?.models || []).map((m: { id: string }) => m.id);
 

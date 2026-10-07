@@ -101,6 +101,7 @@ test("refusal-only Chat deltas reach Claude verbatim and close with refusal", as
     {},
     null,
     null,
+    false,
     "codex"
   );
   assert.equal(quality.valid, true);
@@ -181,6 +182,7 @@ test("whitespace-only Chat refusal never becomes successful native Claude output
     {},
     null,
     null,
+    false,
     "codex"
   );
   assert.equal(quality.valid, false);
@@ -213,6 +215,7 @@ test("Responses refusal parts survive nonstream Chat and native Claude quality g
       {},
       null,
       null,
+      false,
       "codex"
     );
     assert.equal(quality.valid, true);

@@ -1,11 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  getAllImageModels,
-  IMAGE_PROVIDERS,
-  parseImageModel,
-} from "../../open-sse/config/imageRegistry.ts";
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
+import { getAllImageModels, parseImageModel } from "../../open-sse/config/imageRegistry.ts";
 import { dedupeExactCatalogIds } from "../../src/app/api/v1/models/catalogDedupe.ts";
 
 test("text-only ChatGPT Web and its retired alias stay absent from the image catalog", () => {

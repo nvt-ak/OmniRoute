@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { getModelsByProviderId } from "../../open-sse/config/providerModels.ts";
 import { CodexExecutor } from "../../open-sse/executors/codex.ts";
+import { applyCodexReasoningSelection } from "../../open-sse/executors/codex/reasoningPolicy.ts";
 import { openaiToOpenAIResponsesRequest } from "../../open-sse/translator/request/openai-responses/toResponses.ts";
 import { getPricingForModel } from "../../src/shared/constants/pricing.ts";
 import { getModelSpec, capMaxOutputTokens } from "../../src/shared/constants/modelSpecs.ts";
@@ -106,6 +107,29 @@ test("GPT-6.1 Sol uses the catalog medium default without changing explicit effo
     extendCodexGpt56EffortValues("openai", MODEL, ["low", "medium", "high", "xhigh", "max"]),
     EFFORTS.slice(0, -1)
   );
+});
+
+test("GPT-6.1 Sol fallback preserves explicit and discovered reasoning defaults", () => {
+  function select(
+    metadata: Record<string, unknown> = {},
+    connectionDefault?: string,
+    reasoning?: Record<string, unknown>
+  ): ResponsesBody {
+    const body: ResponsesBody = { model: MODEL, input: [], ...(reasoning ? { reasoning } : {}) };
+    applyCodexReasoningSelection(MODEL, body, metadata, connectionDefault, true);
+    return body;
+  }
+
+  assert.equal(select().reasoning.effort, "medium");
+  const discovered = {
+    model: MODEL,
+    supportedThinkingEfforts: EFFORTS,
+    defaultThinkingEffort: "low",
+  };
+  assert.equal(select(discovered).reasoning.effort, "low");
+  assert.equal(select(discovered, "high").reasoning.effort, "high");
+  assert.equal(select(discovered, "high", { effort: "max" }).reasoning.effort, "max");
+  assert.equal(select(discovered, "high", { enabled: false }).reasoning.effort, "none");
 });
 
 test("GPT-6.1 Sol USD pricing uses the current Standard rates and the GPT-6 Fast multiplier", () => {

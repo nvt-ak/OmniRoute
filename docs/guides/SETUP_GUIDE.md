@@ -54,11 +54,11 @@ The [AUR package](https://aur.archlinux.org/packages/omniroute-bin) installs Omn
 ### From Source
 
 ```bash
-npm install
+ONNXRUNTIME_NODE_INSTALL=skip npm install
 PORT=20128 DASHBOARD_PORT=20129 NEXT_PUBLIC_BASE_URL=http://localhost:20129 npm run dev
 ```
 
-> **Windows note:** By default, OmniRoute uses `%APPDATA%\omniroute` when the legacy `%USERPROFILE%\.omniroute` directory is not present. Set `DATA_DIR` to choose a different data-directory location.
+> **Windows note:** In PowerShell, set `$env:ONNXRUNTIME_NODE_INSTALL = "skip"` before running `npm install` or `npm ci` to skip the optional ONNX Runtime CUDA download. By default, OmniRoute uses `%APPDATA%\omniroute` when the legacy `%USERPROFILE%\.omniroute` directory is not present. Set `DATA_DIR` to choose a different data-directory location.
 
 > **Note:** `npm install` auto-generates `.env` from `.env.example` on first run. Subsequent installs will not overwrite an existing `.env`, so customizations are preserved. To re-seed, delete `.env` before re-running.
 

@@ -8,7 +8,8 @@ import {
   UC_PERSONA_IMAGE_URL,
   UC_DIRECT_IMAGE_URL,
 } from "../../open-sse/handlers/imageGeneration/providers/ucImage.ts";
-import { IMAGE_PROVIDERS, parseImageModel } from "../../open-sse/config/imageRegistry.ts";
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
+import { parseImageModel } from "../../open-sse/config/imageRegistry.ts";
 import { isUcClerkMintUrl } from "./helpers/ucClerkUrl.ts";
 
 // A valid PERSONA credential (durable Clerk cookie + sid + uid in psd). No API

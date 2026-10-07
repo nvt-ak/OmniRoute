@@ -6,7 +6,9 @@ import { join } from "node:path";
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), "omniroute-bailian-coding-plan-media-"));
 
-const { IMAGE_PROVIDERS, parseImageModel } = await import("../../open-sse/config/imageRegistry.ts");
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
+// Load runtime routing after DATA_DIR is isolated; static imports initialize the DB too early.
+const { parseImageModel } = await import("../../open-sse/config/imageRegistry.ts");
 const { VIDEO_PROVIDERS, parseVideoModel } = await import("../../open-sse/config/videoRegistry.ts");
 const { resolveProviderServiceKinds } = await import("../../open-sse/config/mediaServiceKinds.ts");
 const { handleImageGeneration } = await import("../../open-sse/handlers/imageGeneration.ts");

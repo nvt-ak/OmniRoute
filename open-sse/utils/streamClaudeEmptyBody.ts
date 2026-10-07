@@ -38,8 +38,8 @@ const CLEAN_EMPTY_STOP_REASONS: Record<string, true> = {
 
 /**
  * Claude SSE clean-stop policy, not a non-streaming or OpenAI exemption.
- * Translated Codex turns only reach a clean stop after stream.ts confirmed a
- * successful upstream Responses completion; estimated usage is never trusted.
+ * Codex empty stops require the shared trusted-stop policy.
+ * Estimated Antigravity usage is never trusted.
  */
 export function isCleanEmptyClaudeStop(
   stopReason: unknown,

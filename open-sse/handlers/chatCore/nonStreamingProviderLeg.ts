@@ -998,6 +998,23 @@ export async function runNonStreamingProviderLeg(
   }
   responseBody = unwrapClineNonStreamingEnvelope(provider, responseBody) as typeof responseBody;
 
+  // Terminal provider failures are not empty completions. Classify before the
+  // empty-content fallback can replace their error details or usage.
+  const bufferedFailure = bufferedResponsesFailure(
+    input,
+    {
+      responseBody,
+      provider,
+      model: currentModel,
+      connectionId,
+      headers: new Headers(executorResult.headers),
+      startMs,
+      startedAt,
+      upstreamResponse: executorResult.response,
+    },
+    { legError, extractUsage, buildReceipt }
+  );
+  if (bufferedFailure) return bufferedFailure;
   // -- Empty content -> family fallback (initial only) -------------------------
   // #14160: pass the provider so first-party APIs (antigravity) keep empty
   // completions with a normal stop reason as valid 200s instead of synthetic

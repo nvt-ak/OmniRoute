@@ -112,9 +112,9 @@ test("completed silent Responses project to Claude without invented text", () =>
   assert.deepEqual(translated.content, []);
   assert.equal(translated.stop_reason, "end_turn");
   assert.deepEqual(translated.usage, { input_tokens: 10, output_tokens: 4 });
-  // A completed Codex turn with reported usage is a trusted silent answer.
-  assert.equal(isEmptyContentResponse(translated, { provider: "codex" }), false);
-  assert.equal(detectMalformedNonStream(translated, "codex"), null);
+  // Reported generation cannot make an empty Codex answer successful.
+  assert.equal(isEmptyContentResponse(translated, { provider: "codex" }), true);
+  assert.equal(detectMalformedNonStream(translated, "codex"), "empty_choices");
   assert.equal(isEmptyContentResponse(translated, { provider: "opencode" }), true);
 });
 
@@ -160,7 +160,6 @@ for (const status of ["failed", "incomplete", "cancelled", "in_progress"]) {
     assert.equal(firstChoice(openai).finish_reason, status);
     const claude = translateNonStreamingResponse(body, FORMATS.OPENAI_RESPONSES, FORMATS.CLAUDE);
     assert.equal(claude.stop_reason, status);
-    assert.deepEqual(claude.content, [{ type: "text", text: "(empty response)" }]);
   });
 }
 
@@ -176,7 +175,6 @@ for (const metadata of [
       FORMATS.CLAUDE
     );
     assert.notEqual(translated.stop_reason, "end_turn");
-    assert.deepEqual(translated.content, [{ type: "text", text: "(empty response)" }]);
   });
 }
 
@@ -189,7 +187,6 @@ for (const marker of ["estimated", Symbol.for("omniroute.usage.estimated")]) {
     assert.equal(estimatedUsage(openai), true);
     const claude = translateNonStreamingResponse(body, FORMATS.OPENAI_RESPONSES, FORMATS.CLAUDE);
     assert.equal(estimatedUsage(claude), true);
-    assert.deepEqual(claude.content, [{ type: "text", text: "(empty response)" }]);
   });
 }
 

@@ -129,7 +129,9 @@ test("Sonnet 5.5 leaves adaptive and client-sent between_tools untouched", async
     "claude-sonnet-5-5"
   );
   assert.deepEqual(adaptive.thinking, { type: "adaptive" });
-  assert.deepEqual(adaptive.output_config, { effort: "max" });
+  // Release #15035: Sonnet 5.5 caps effort at xhigh (max is an upstream 400),
+  // so adaptive keeps its thinking mode but max is clamped to xhigh.
+  assert.deepEqual(adaptive.output_config, { effort: "xhigh" });
 });
 
 test("Sonnet 5.5 relaxes forced tool_choice (upstream rejects any/tool)", async () => {

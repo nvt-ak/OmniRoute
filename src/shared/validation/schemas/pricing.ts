@@ -22,10 +22,11 @@ export const pricingFieldsSchema = z
     reasoning: z.number().min(0).optional(),
     cache_creation: z.number().min(0).optional(),
     // Long-context tier carried by default rows (e.g. OpenAI >272K, xAI >=200K) and echoed
-    // back by the dashboard's GET → PATCH round-trip (#12494).
+    // back by the dashboard's GET → PATCH round-trip (#12494). `null` explicitly clears
+    // an inherited tier.
     long_context: z
       .object({
-        threshold: z.number().positive(),
+        threshold: z.number().int().positive(),
         inclusive: z.boolean().optional(),
         input: z.number().min(0).optional(),
         output: z.number().min(0).optional(),
@@ -34,6 +35,7 @@ export const pricingFieldsSchema = z
         cache_creation: z.number().min(0).optional(),
       })
       .strict()
+      .nullable()
       .optional(),
     // Written by pricingSync alongside the token fields and echoed back by the
     // dashboard's GET → PATCH round-trip; strict() would otherwise reject the

@@ -44,6 +44,57 @@ test("empty refusal is still empty, and a final refusal wins over earlier commen
   assert.equal(converted.choices[0].message.content, "");
 });
 
+test("selected Responses message preserves both content and refusal", () => {
+  const mixed = {
+    ...response,
+    output: [
+      { ...item, id: "earlier", content: [{ type: "refusal", refusal: "Earlier refusal" }] },
+      {
+        ...item,
+        content: [
+          { type: "output_text", text: "Visible explanation" },
+          { type: "refusal", refusal: "  " },
+          { type: "refusal", refusal: REFUSAL },
+        ],
+      },
+    ],
+  };
+  const openai = translateNonStreamingResponse(mixed, "openai-responses", "openai");
+  assert.equal(openai.choices[0].message.content, "Visible explanation");
+  assert.equal(openai.choices[0].message.refusal, REFUSAL);
+  assert.equal(openai.choices[0].finish_reason, "content_filter");
+  const claude = translateNonStreamingResponse(mixed, "openai-responses", "claude");
+  assert.deepEqual(claude.content, [
+    { type: "text", text: "Visible explanation" },
+    { type: "text", text: REFUSAL },
+  ]);
+});
+
+test("whitespace-only refusal does not replace earlier visible output", () => {
+  const whitespaceItem = { ...item, content: [{ type: "refusal", refusal: " \n\t " }] };
+  const converted = translateNonStreamingResponse(
+    {
+      ...response,
+      output: [
+        { ...item, id: "visible", content: [{ type: "output_text", text: "Final answer" }] },
+        whitespaceItem,
+      ],
+    },
+    "openai-responses",
+    "openai"
+  );
+  assert.equal(converted.choices[0].message.content, "Final answer");
+  assert.equal(converted.choices[0].message.refusal, undefined);
+  assert.equal(converted.choices[0].finish_reason, "stop");
+  const empty = translateNonStreamingResponse(
+    { ...response, output: [whitespaceItem] },
+    "openai-responses",
+    "openai"
+  );
+  assert.equal(empty.choices[0].message.refusal, undefined);
+  assert.equal(detectMalformedNonStream(empty, "codex"), "empty_choices");
+});
+
 test("combo quality gate accepts structured refusals instead of retrying them", async () => {
   for (const body of [
     response,

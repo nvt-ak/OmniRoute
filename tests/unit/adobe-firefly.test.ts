@@ -52,7 +52,7 @@ import { USAGE_SUPPORTED_PROVIDERS } from "../../src/shared/constants/providers.
 import { handleAdobeFireflyImageGeneration } from "../../open-sse/handlers/imageGeneration/providers/adobeFirefly.ts";
 import { handleAdobeFireflyVideoGeneration } from "../../open-sse/handlers/videoGeneration/adobeFireflyHandler.ts";
 import { WEB_COOKIE_PROVIDERS } from "../../src/shared/constants/providers/web-cookie.ts";
-import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistry.ts";
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
 import { VIDEO_PROVIDERS } from "../../open-sse/config/videoRegistry.ts";
 import { getExecutor } from "../../open-sse/executors/index.ts";
 

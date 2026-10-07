@@ -6,7 +6,8 @@
 // reachable only via its prefix. Operator decision 2026-07-31.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { IMAGE_PROVIDERS, parseImageModel } from "@omniroute/open-sse/config/imageRegistry.ts";
+import { IMAGE_PROVIDERS } from "@omniroute/open-sse/config/imageRegistryData.ts";
+import { parseImageModel } from "@omniroute/open-sse/config/imageRegistry.ts";
 
 test("cheaperinference is registered as an image provider with the 3 measured models", () => {
   const provider = IMAGE_PROVIDERS.cheaperinference;

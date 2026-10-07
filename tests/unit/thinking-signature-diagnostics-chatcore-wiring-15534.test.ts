@@ -17,6 +17,42 @@ const { handleChatCore } = await import("../../open-sse/handlers/chatCore.ts");
 const originalFetch = globalThis.fetch;
 const SECRET_THINKING = "private chain of thought 15534";
 
+// The passthrough pre-send sanitizer drops structurally invalid / cross-model
+// signatures, so the fixture needs a real-shaped signature minted for the target
+// model to reach Anthropic and exercise the 400 recovery path.
+function claudeSignatureFor(modelName: string): string {
+  const tag = (field: number, wire: number) => Buffer.from([(field << 3) | wire]);
+  const varint = (value: number) => {
+    const bytes: number[] = [];
+    let v = value;
+    while (v > 0x7f) {
+      bytes.push((v & 0x7f) | 0x80);
+      v >>>= 7;
+    }
+    bytes.push(v);
+    return Buffer.from(bytes);
+  };
+  const name = Buffer.from(modelName);
+  const channel = Buffer.concat([
+    tag(1, 0),
+    varint(12),
+    tag(2, 0),
+    varint(2),
+    tag(6, 2),
+    varint(name.length),
+    name,
+  ]);
+  const container = Buffer.concat([tag(1, 2), varint(channel.length), channel]);
+  return Buffer.concat([
+    tag(2, 2),
+    varint(container.length),
+    container,
+    tag(3, 0),
+    varint(1),
+  ]).toString("base64");
+}
+const SIGNATURE = claudeSignatureFor("claude-opus-5");
+
 function captureLog() {
   const warnings = [];
   return {
@@ -118,7 +154,7 @@ async function runSignatureFailure(stream) {
       {
         role: "assistant",
         content: [
-          { type: "thinking", thinking: SECRET_THINKING, signature: "SIG_FOREIGN_15534" },
+          { type: "thinking", thinking: SECRET_THINKING, signature: SIGNATURE },
           { type: "text", text: "a1" },
         ],
       },
@@ -160,6 +196,6 @@ for (const stream of [false, true]) {
     assert.equal(event.recoveryAttempted, true);
     assert.equal(event.recoverySucceeded, true);
     assert.ok(!events[0].message.includes(SECRET_THINKING), "event must not carry thinking text");
-    assert.ok(!events[0].message.includes("SIG_FOREIGN_15534"), "event must not carry signatures");
+    assert.ok(!events[0].message.includes(SIGNATURE), "event must not carry signatures");
   });
 }

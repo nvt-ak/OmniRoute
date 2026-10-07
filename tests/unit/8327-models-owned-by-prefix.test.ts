@@ -259,13 +259,13 @@ test("#9416: compatible provider with empty prefix falls back to slugified name,
   }
 });
 
-test("#9416: compatible provider with null/undefined prefix also falls back to slugified name", async () => {
+async function assertMissingPrefixFallback(prefix: null | undefined) {
   const nodeIdWithoutPrefix = "openai-compatible-chat-660e8400-e29b-41d4-a716-446655440001";
   await providersDb.createProviderNode({
     id: nodeIdWithoutPrefix,
     type: "openai-compatible",
     name: "My Custom Proxy",
-    // prefix omitted entirely → should fall back to slugified name
+    prefix,
     baseUrl: "https://myproxy.example.com",
     chatPath: "/v1/chat/completions",
     modelsPath: "/v1/models",
@@ -315,7 +315,13 @@ test("#9416: compatible provider with null/undefined prefix also falls back to s
     `owned_by must be the slugified name "${expectedSlug}", not the raw provider-node id`
   );
   assert.notEqual(entry!.owned_by, nodeIdWithoutPrefix);
-});
+}
+
+for (const prefix of [null, undefined]) {
+  test(`#9416: compatible provider with ${prefix} prefix falls back to slugified name`, async () => {
+    await assertMissingPrefixFallback(prefix);
+  });
+}
 
 test("#9416: provider with configured prefix still uses the configured prefix (regression guard)", async () => {
   await providersDb.createProviderNode({

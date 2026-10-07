@@ -71,6 +71,46 @@ safely retry only the failures after a partial result.
 6. Click **Connect**
 7. Done! You now have access to that provider's models.
 
+#### Native Anthropic Console keys
+
+For a normal Claude Console API key, open `/dashboard/providers/anthropic` and add
+the key directly; a custom provider node is not required. **Check** and **Save**
+authenticate against the official Models API without generating tokens. The saved
+connection becomes active after its connection test succeeds. Request models as
+`anthropic/<upstream-model-id>`, for example `anthropic/claude-haiku-5-5`.
+Claude subscription OAuth is a separate provider (`claude`, model prefix `cc/`).
+
+Native Console requests do not send Claude Code/OAuth classification betas.
+[Monthly Max/Team API credits](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-and-team-plans)
+cover Messages API traffic but exclude interactive Claude Code usage. Authentication
+checks succeeding does not guarantee available credits or permission for every model.
+
+#### Compatible-model pricing and API-key budgets
+
+Configured OpenAI-compatible and Anthropic-compatible nodes resolve prices in this
+order: their own model override, normalized model-name override, matching metered
+price in the canonical provider family, then a matching metered model name across
+the merged pricing tables (defaults, LiteLLM, models.dev, and user overrides).
+Matching ignores case, provider prefixes, and dot/hyphen version spelling.
+When multiple global prices match, the highest input-plus-output rate wins with
+a stable provider/model tie-break. Subscription/flat-rate prices are not inherited.
+
+If no price matches, unknown custom models use a fixed **Sonnet 5.5 estimate** per
+million tokens: input **$2**, output/reasoning **$10**, cache read **$0.10**, and
+cache write **$2.50**. This estimate counts toward daily/weekly API-key budgets;
+it is not a claim about the gateway's actual bill. An explicit custom-model price,
+including an intentional zero-price override, takes precedence immediately.
+Missing/deleted nodes and unknown native models do not receive this custom estimate;
+unpriced usage in an enforced budget window remains blocked with `missing_pricing`.
+
+[Haiku 5.5 pricing](https://platform.claude.com/docs/en/about-claude/pricing)
+uses the original inclusive prompt size: up to 100,000 input tokens costs
+$0.10/$0.50 per million input/output tokens; larger prompts cost $0.50/$2.50.
+Quota, analytics, and forecast aggregation preserve each request's prompt tier,
+rather than treating the sum of several short requests as one long prompt.
+Cache-write pricing uses the 5-minute rate; stored normalized usage does not
+distinguish 1-hour cache-write duration.
+
 ### Option C: OAuth Provider (Subscription)
 
 1. Open the dashboard at `http://localhost:20128`

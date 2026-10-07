@@ -562,6 +562,79 @@ test("CodexExecutor.transformRequest omits detached replay before missing-output
   );
 });
 
+test("CodexExecutor.transformRequest plans replay from real outputs before repairing unrelated calls", () => {
+  const executor = new CodexExecutor();
+  const sessionId = "opaque-replay-repair-session";
+  for (const callId of ["completed-call", "missing-call"]) {
+    codexOpaqueResponsesReplayStore.appendTurn({
+      model: "gpt-5.5",
+      sessionId: `session:${sessionId}`,
+      turnMarker: callId,
+      items: [
+        { type: "reasoning", encryptedContent: `reasoning-for-${callId}` },
+        { type: "function_call", callId, name: "read_file", arguments: "{}" },
+      ],
+    });
+  }
+  const body = {
+    model: "gpt-5.5-xhigh",
+    session_id: sessionId,
+    input: [
+      { type: "function_call", call_id: "missing-call", name: "read_file", arguments: "{}" },
+      { type: "function_call_output", call_id: "completed-call", output: "actual file contents" },
+      { type: "function_call_output", call_id: "unknown-call", output: "orphan contents" },
+    ],
+  };
+  const originalBody = structuredClone(body);
+
+  const result = executor.transformRequest("gpt-5.5-xhigh", body, false, {
+    requestEndpointPath: "/responses",
+  });
+
+  assert.ok(Array.isArray(result.input));
+  const items = result.input.map(getRecord);
+  assert.deepEqual(
+    items.map((item) => [item.type, item.call_id]),
+    [
+      ["function_call", "missing-call"],
+      ["function_call_output", "missing-call"],
+      ["reasoning", undefined],
+      ["function_call", "completed-call"],
+      ["function_call_output", "completed-call"],
+    ]
+  );
+  assert.equal(items[1].output, "");
+  assert.equal(items[2].encrypted_content, "reasoning-for-completed-call");
+  assert.equal(items[4].output, "actual file contents");
+  assert.equal(
+    items.some((item) => item.encrypted_content === "reasoning-for-missing-call"),
+    false
+  );
+  assert.equal(
+    items.some((item) => item.call_id === "unknown-call"),
+    false
+  );
+  assert.deepEqual(body, originalBody);
+});
+
+test("CodexExecutor.transformRequest retains translated continuation after unmatched outputs are stripped", () => {
+  const executor = new CodexExecutor();
+  const result = executor.transformRequest(
+    "gpt-5.5",
+    {
+      model: "gpt-5.5",
+      session_id: "opaque-replay-unmatched-output-session",
+      input: [{ type: "function_call_output", call_id: "unknown-call", output: "orphan contents" }],
+    },
+    false,
+    { requestEndpointPath: "/responses" }
+  );
+
+  assert.deepEqual(result.input, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] },
+  ]);
+});
+
 test("CodexExecutor.transformRequest suppresses replay duplicates", () => {
   // Given
   const executor = new CodexExecutor();

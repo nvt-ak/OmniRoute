@@ -23,19 +23,10 @@ const LEGIT_EMPTY_CLAUDE_STOP: Record<string, true> = {
 };
 const LEGIT_EMPTY_OPENAI_FINISH = new Set(["length", "tool_calls", "content_filter"]);
 
-// #14160: providers whose normal stop with no usable content is a real answer.
-// Codex: a watchdog-style prompt ("silence preferred") completes with an empty
-// `final_answer`, status "completed" and reasoning_tokens 0 (live capture,
-// 2026-10-06), so reasoning tokens cannot be the trust signal. Streams instead
-// require the upstream Responses terminal to affirm success before this rule is
-// consulted (stream.ts `successfulResponsesCompletion`); incomplete, failed and
-// unterminated turns never reach a normal stop. Estimated usage never trusts.
-const TRUSTED_EMPTY_STOP_PROVIDERS: Record<string, true> = { antigravity: true, codex: true };
-// Codex must report generated output (live silent turns: output_tokens 4). A
-// usage-less or zero-output shell is not a model answer and keeps failing over.
-// Streams additionally require a successful upstream Responses terminal; chat
-// and non-stream shapes carry no `final_answer` marker, so this is their gate.
-const REQUIRES_GENERATED_OUTPUT: Record<string, true> = { codex: true };
+// Only Antigravity treats an ordinary empty stop as an answer. Codex usage,
+// including positive generated/reasoning tokens, cannot prove usable output.
+// Native execution trust is checked separately; estimated usage never trusts.
+const TRUSTED_EMPTY_STOP_PROVIDERS: Record<string, true> = { antigravity: true };
 const NORMAL_STOP_REASONS: Record<string, true> = {
   stop: true,
   end_turn: true,
@@ -46,8 +37,8 @@ const NORMAL_STOP_REASONS: Record<string, true> = {
  * True when an empty completion is a legitimate answer rather than a fake
  * success: an explicitly allowlisted provider ended the turn normally and its
  * usage was not locally estimated.
- * Shared by the non-streaming check, the stream content watcher, and the
- * combo quality gate so all three paths apply one rule.
+ * Shared fallback for callers without authenticated native execution provenance.
+ * Proven native ordinary completions are checked separately by those callers.
  */
 export function isTrustedEmptyStop(
   provider: string | null | undefined,
@@ -61,7 +52,7 @@ export function isTrustedEmptyStop(
     return false;
   }
   if (isEstimatedUsage(usage)) return false;
-  return !Object.hasOwn(REQUIRES_GENERATED_OUTPUT, provider) || readUsageOutputTokens(usage) > 0;
+  return true;
 }
 
 /** Reasoning token count from an OpenAI chat, Responses, or flat usage object. */
@@ -71,14 +62,6 @@ export function readUsageReasoningTokens(usage: unknown): number {
   const details = (record.completion_tokens_details ?? record.output_tokens_details) as
     Record<string, unknown> | undefined;
   const raw = details?.reasoning_tokens ?? record.reasoning_tokens;
-  return typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
-}
-
-/** Generated token count; input, cache, and total usage are not output proof. */
-export function readUsageOutputTokens(usage: unknown): number {
-  if (!usage || typeof usage !== "object") return 0;
-  const record = usage as Record<string, unknown>;
-  const raw = record.completion_tokens ?? record.output_tokens;
   return typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
 }
 
@@ -119,8 +102,10 @@ export function isEmptyContentResponse(
     });
     return (
       !hasOutput &&
-      !(isSuccessfulResponsesCompletion(body) &&
-        (trustedEmptyTurn || isTrustedEmptyStop(provider, "stop", body.usage)))
+      !(
+        isSuccessfulResponsesCompletion(body) &&
+        (trustedEmptyTurn || isTrustedEmptyStop(provider, "stop", body.usage))
+      )
     );
   }
 
@@ -159,7 +144,10 @@ export function isEmptyContentResponse(
     // #14160: on a trusted first-party API, an empty completion that stopped
     // normally is a valid answer — pass it through as a 200 instead of
     // rewriting it into a synthetic 502.
-    if ((trustedEmptyTurn && finishReason === "stop") || isTrustedEmptyStop(provider, finishReason, body.usage)) {
+    if (
+      (trustedEmptyTurn && finishReason === "stop") ||
+      isTrustedEmptyStop(provider, finishReason, body.usage)
+    ) {
       return false;
     }
 
@@ -168,13 +156,13 @@ export function isEmptyContentResponse(
 
   if (Array.isArray(body.content)) {
     if (body.content.length > 0) return false;
-    // Empty content can be a legitimate terminal state. A refusal is valid only
-    // in the native assistant Messages shape, never an error envelope or an
-    // unrelated payload that happens to carry the same stop_reason.
+    // Empty content can be a legitimate terminal state. Release Messages payloads
+    // may omit role; reject an explicit non-assistant role, an error envelope, or
+    // an unrelated payload that happens to carry the same stop_reason.
     const stopReason = typeof body.stop_reason === "string" ? body.stop_reason : "";
     if (
       stopReason === "refusal" &&
-      (body.type !== "message" || body.role !== "assistant" || "error" in body)
+      (body.type !== "message" || ("role" in body && body.role !== "assistant") || "error" in body)
     ) {
       return true;
     }

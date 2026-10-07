@@ -10,14 +10,15 @@ import assert from "node:assert/strict";
 // the dedicated handlers (mocked fetch, no live key required), and the
 // error path staying sanitized (no raw stack/message leakage).
 
-const { IMAGE_PROVIDERS, getImageProvider } = await import("../../open-sse/config/imageRegistry.ts");
-const { VIDEO_PROVIDERS, getVideoProvider } = await import("../../open-sse/config/videoRegistry.ts");
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
+import { getImageProvider } from "../../open-sse/config/imageRegistry.ts";
+const { VIDEO_PROVIDERS, getVideoProvider } =
+  await import("../../open-sse/config/videoRegistry.ts");
 const { handleImageGeneration } = await import("../../open-sse/handlers/imageGeneration.ts");
 const { handleVideoGeneration } = await import("../../open-sse/handlers/videoGeneration.ts");
 const { APIKEY_PROVIDERS } = await import("../../src/shared/constants/providers/apikey/index.ts");
-const { IMAGE_ONLY_PROVIDER_IDS, VIDEO_PROVIDER_IDS } = await import(
-  "../../src/shared/constants/providers.ts"
-);
+const { IMAGE_ONLY_PROVIDER_IDS, VIDEO_PROVIDER_IDS } =
+  await import("../../src/shared/constants/providers.ts");
 
 test("segmind connection-metadata entry is registered with the expected shape", () => {
   const entry = (APIKEY_PROVIDERS as Record<string, { id: string; website: string }>).segmind;
@@ -27,7 +28,10 @@ test("segmind connection-metadata entry is registered with the expected shape", 
 });
 
 test("segmind is registered in both IMAGE_ONLY_PROVIDER_IDS and VIDEO_PROVIDER_IDS", () => {
-  assert.ok(IMAGE_ONLY_PROVIDER_IDS.has("segmind"), "segmind must appear in IMAGE_ONLY_PROVIDER_IDS");
+  assert.ok(
+    IMAGE_ONLY_PROVIDER_IDS.has("segmind"),
+    "segmind must appear in IMAGE_ONLY_PROVIDER_IDS"
+  );
   assert.ok(VIDEO_PROVIDER_IDS.has("segmind"), "segmind must appear in VIDEO_PROVIDER_IDS");
 });
 
@@ -130,7 +134,9 @@ test("handleImageGeneration returns b64_json when response_format=b64_json is re
     });
 
     assert.equal(result.success, true);
-    assert.ok(typeof result.data.data[0].b64_json === "string" && result.data.data[0].b64_json.length > 0);
+    assert.ok(
+      typeof result.data.data[0].b64_json === "string" && result.data.data[0].b64_json.length > 0
+    );
     assert.equal(result.data.data[0].url, undefined);
   } finally {
     globalThis.fetch = originalFetch;
@@ -195,7 +201,9 @@ test("handleVideoGeneration posts to Segmind with x-api-key and returns an mp4 b
     assert.equal(requestCapture.body.prompt, "a smiling woman walking in London at night");
     assert.equal(requestCapture.body.aspect_ratio, "16:9");
     assert.equal(result.data.data[0].format, "mp4");
-    assert.ok(typeof result.data.data[0].b64_json === "string" && result.data.data[0].b64_json.length > 0);
+    assert.ok(
+      typeof result.data.data[0].b64_json === "string" && result.data.data[0].b64_json.length > 0
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -205,7 +213,7 @@ test("handleVideoGeneration sanitizes Segmind upstream error bodies (no raw stac
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async () =>
-    new Response("Traceback (most recent call last):\n  File \"/srv/app/handler.py\", line 10", {
+    new Response('Traceback (most recent call last):\n  File "/srv/app/handler.py", line 10', {
       status: 502,
       headers: { "content-type": "text/plain" },
     });
