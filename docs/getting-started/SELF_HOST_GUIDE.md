@@ -218,7 +218,7 @@ From source (development only — not a deploy path):
 ```bash
 git clone https://github.com/diegosouzapw/OmniRoute.git
 cd OmniRoute
-npm install
+ONNXRUNTIME_NODE_INSTALL=skip npm install
 npm run build && npm start
 ```
 

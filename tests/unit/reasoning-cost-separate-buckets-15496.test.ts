@@ -25,3 +25,19 @@ test("#15496 inclusive shape still priced correctly (regression guard)", () => {
   );
   assert.equal(cost, 0.016);
 });
+
+test("long-context pricing bills a separate reasoning bucket at its tier rate", () => {
+  const cost = computeCostFromPricing(
+    { input: 1, output: 10, long_context: { threshold: 100, input: 2, output: 20, reasoning: 5 } },
+    { prompt_tokens: 200, completion_tokens: 4, reasoning_tokens: 40 }
+  );
+  assert.ok(Math.abs(cost - 0.00068) < 1e-12, `got ${cost}`);
+});
+
+test("long-context pricing applies its reasoning premium to inclusive output", () => {
+  const cost = computeCostFromPricing(
+    { input: 1, output: 10, long_context: { threshold: 100, input: 2, output: 20, reasoning: 30 } },
+    { prompt_tokens: 200, completion_tokens: 1_000, reasoning_tokens: 500 }
+  );
+  assert.ok(Math.abs(cost - 0.0254) < 1e-12, `got ${cost}`);
+});

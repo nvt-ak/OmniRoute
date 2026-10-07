@@ -4,15 +4,32 @@
 
 import { getDbInstance } from "../core";
 import { backupDbFile } from "../backup";
-import { getCachedPricing, invalidateDbCache } from "../readCache";
+import { getCachedPricing, getCachedProviderNodes, invalidateDbCache } from "../readCache";
 import { PROVIDER_ID_TO_ALIAS } from "@omniroute/open-sse/config/providerModels.ts";
 import { invalidateUserPricingMemo } from "@/lib/catalogUserPricing";
 import { type JsonRecord, toRecord } from "./shared";
+import { isFlatRateProvider } from "@/lib/usage/flatRateProviders";
 
 type PricingModels = Record<string, JsonRecord>;
 type PricingByProvider = Record<string, PricingModels>;
 export type PricingSource = "default" | "litellm" | "modelsDev" | "user";
 export type PricingSourceMap = Record<string, Record<string, PricingSource>>;
+
+// Operator-approved estimate for unknown compatible-node models: Sonnet 5.5
+// API rates, not a claim about the upstream model's actual billed price.
+// https://platform.claude.com/docs/en/about-claude/pricing (2026-10-08).
+const CUSTOM_MODEL_FALLBACK_PRICING = Object.freeze({
+  input: 2,
+  output: 10,
+  cached: 0.1,
+  reasoning: 10,
+  cache_creation: 2.5,
+});
+
+const NON_METERED_PRICING_ALIASES: Record<string, true> = { codex: true, cx: true };
+for (const [id, alias] of Object.entries(PROVIDER_ID_TO_ALIAS)) {
+  if (isFlatRateProvider(id)) NON_METERED_PRICING_ALIASES[alias.toLowerCase()] = true;
+}
 
 async function touchPricing(): Promise<void> {
   invalidateDbCache("pricing");
@@ -202,7 +219,94 @@ export function findModelPricing(
 export async function getPricingForModel(provider: string, model: string) {
   const pricing = (await getCachedPricing()) as PricingByProvider;
   const providerPricing = findProviderPricing(pricing, provider);
-  return providerPricing ? findModelPricing(providerPricing, model) : null;
+  const modelPricing = providerPricing ? findModelPricing(providerPricing, model) : null;
+  if (modelPricing) return modelPricing;
+  const mLower = (model || "").toLowerCase();
+
+  // Compatible nodes use operator-approved estimates when no node-specific
+  // price exists. Only configured nodes qualify; native/deleted IDs fail closed.
+  const nodes = await getCachedProviderNodes();
+  const node = nodes.find((entry) => entry?.id === provider);
+  const nodeType = typeof node?.type === "string" ? node.type : "";
+  if (
+    !node ||
+    (nodeType !== "anthropic-compatible" &&
+      nodeType !== "openai-compatible" &&
+      nodeType !== "openai-compatible-responses")
+  ) {
+    return null;
+  }
+  const basename = mLower.split("/").at(-1) || "";
+  const normalizedModel = basename.replace(/\./g, "-");
+  if (!normalizedModel) return null;
+  // Normalize custom override names before trying estimates, so a public path
+  // prefix never hides an explicit node price (including an explicit $0 price).
+  if (providerPricing) {
+    for (const [candidate, entry] of Object.entries(providerPricing)) {
+      if (candidate.toLowerCase().split("/").at(-1)?.replace(/\./g, "-") === normalizedModel) {
+        return entry;
+      }
+    }
+  }
+
+  const canonicalProvider = nodeType === "anthropic-compatible" ? "anthropic" : "openai";
+  const canonicalPricing = findKeyInsensitive<PricingModels>(pricing, canonicalProvider);
+  if (canonicalPricing) {
+    // An exact requested basename is authoritative before equivalent spellings:
+    // a hyphen-key operator override must not be hidden by an earlier dot default.
+    const exactPrice = findKeyInsensitive<JsonRecord>(canonicalPricing, basename);
+    const exactRate = exactPrice ? Number(exactPrice.input) + Number(exactPrice.output) : 0;
+    if (exactPrice && Number.isFinite(exactRate) && exactRate > 0) return exactPrice;
+    const hyphenPrice =
+      basename !== normalizedModel
+        ? findKeyInsensitive<JsonRecord>(canonicalPricing, normalizedModel)
+        : undefined;
+    const hyphenRate = hyphenPrice ? Number(hyphenPrice.input) + Number(hyphenPrice.output) : 0;
+    if (hyphenPrice && Number.isFinite(hyphenRate) && hyphenRate > 0) return hyphenPrice;
+    for (const [candidate, entry] of Object.entries(canonicalPricing)) {
+      const score = Number(entry.input) + Number(entry.output);
+      if (
+        Number.isFinite(score) &&
+        score > 0 &&
+        candidate.toLowerCase().split("/").at(-1)?.replace(/\./g, "-") === normalizedModel
+      ) {
+        return entry;
+      }
+    }
+  }
+
+  // Name collisions across metered catalogs choose the highest combined rate;
+  // ties use a stable lexical identity. Subscription estimates are never used
+  // as prices for custom API-credit traffic, even if their row claims $0.
+  let matchedPricing: JsonRecord | null = null;
+  let highestRate = 0;
+  let matchedIdentity = "";
+  for (const [pricingProvider, models] of Object.entries(pricing)) {
+    const providerKey = pricingProvider.toLowerCase();
+    if (
+      isFlatRateProvider(providerKey) ||
+      Object.hasOwn(NON_METERED_PRICING_ALIASES, providerKey)
+    ) {
+      continue;
+    }
+    for (const [candidate, entry] of Object.entries(models)) {
+      if (candidate.toLowerCase().split("/").at(-1)?.replace(/\./g, "-") !== normalizedModel) {
+        continue;
+      }
+      const score = Number(entry.input) + Number(entry.output);
+      const identity = `${providerKey}/${candidate.toLowerCase()}`;
+      if (
+        Number.isFinite(score) &&
+        score > 0 &&
+        (score > highestRate || (score === highestRate && identity < matchedIdentity))
+      ) {
+        matchedPricing = entry;
+        highestRate = score;
+        matchedIdentity = identity;
+      }
+    }
+  }
+  return matchedPricing || CUSTOM_MODEL_FALLBACK_PRICING;
 }
 
 export async function updatePricing(pricingData: PricingByProvider) {

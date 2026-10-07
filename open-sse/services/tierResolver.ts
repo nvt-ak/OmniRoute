@@ -3,11 +3,9 @@ import { PROVIDER_TIER } from "./tierTypes";
 import { getModelPricing } from "./providerCostData";
 import { isExplicitlyFree } from "./providerCostData";
 import { mergeTierConfig, DEFAULT_TIER_CONFIG } from "./tierConfig";
-import { createRequire } from "node:module";
+import { getDbInstance } from "../../src/lib/db/core.ts";
 import { PROVIDER_ID_TO_ALIAS } from "../config/providerModels.ts";
 import { getDefaultPricing } from "@/shared/constants/pricing";
-
-const lazyRequire = createRequire(import.meta.url);
 
 const tierCache = new Map<string, TierAssignment>();
 let currentConfig: TierConfig = DEFAULT_TIER_CONFIG;
@@ -25,32 +23,19 @@ function refreshTierPricingSnapshot(): void {
   // An injected snapshot (see setTierPricingSnapshot) is authoritative
   // until released: never let a refresh clobber it.
   if (snapshotPinned) return;
-  let getDbInstance: (() => unknown) | undefined;
   try {
-    // Lazy require: mirrors setTierConfig below; no new static edge,
-    // no src/lib/db <-> open-sse/services cycle (settings/pricing already
-    // imports this module dynamically). The defaults layer comes from a
-    // static import (same module the hardcoded table already depends on).
-    // createRequire (not the bare require global) so this also resolves
-    // under native ESM, where require is undefined.
-    getDbInstance = lazyRequire("../../src/lib/db/core").getDbInstance;
-  } catch {
-    return; // fail-open: keep the previous snapshot
-  }
-  try {
-    const db = (
-      getDbInstance as () => {
-        prepare(s: string): { all(...a: unknown[]): Array<{ key: string; value: string }> };
-      }
-    )();
+    // Keep the internal DB binding bundle-aware: a source-relative runtime
+    // require resolves from the emitted worker, not this source module.
+    const db = getDbInstance();
     const merged: Record<string, Record<string, unknown>> = {
       ...(getDefaultPricing() as Record<string, Record<string, unknown>>),
     };
     // Layer order mirrors getPricingLayers: user rows win over synced layers.
     for (const ns of ["pricing_synced", "models_dev_pricing", "pricing"]) {
-      for (const row of db
+      const rows = db
         .prepare("SELECT key, value FROM key_value WHERE namespace = ?")
-        .all(ns)) {
+        .all(ns) as Array<{ key: string; value: string }>;
+      for (const row of rows) {
         try {
           const models = JSON.parse(row.value) as Record<string, unknown>;
           merged[row.key] = { ...(merged[row.key] || {}), ...models };

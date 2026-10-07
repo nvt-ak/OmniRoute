@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { isCursorApiKey } from "../../../services/cursorApiKeyAuth.ts";
 import { sanitizeErrorMessage } from "../../../utils/error.ts";
 import { saveImageErrorResult, saveImageSuccessResult } from "../../imageGeneration.ts";
-import { IMAGE_PROVIDERS } from "../../../config/imageRegistry.ts";
+import { IMAGE_PROVIDERS } from "../../../config/imageRegistryData.ts";
 
 export const CURSOR_AGENT_IMAGE_FORMAT = "cursor-agent-image";
 

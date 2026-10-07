@@ -50,7 +50,6 @@ const PIPELINE_END = "omni-pipeline-end";
 const PIPELINE_MEASURE = "omni-pipeline";
 
 type HeadersLike = Headers | Record<string, unknown> | null | undefined;
-type StreamingController = Parameters<typeof defaultPipeWithDisconnect>[2];
 
 export interface StreamingPipelineDeps {
   wantsProgress: typeof defaultWantsProgress;

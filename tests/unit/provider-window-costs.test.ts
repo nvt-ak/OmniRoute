@@ -10,6 +10,7 @@ process.env.DATA_DIR = TEST_DATA_DIR;
 process.env.DISABLE_SQLITE_AUTO_BACKUP = "true";
 process.env.API_KEY_SECRET = "provider-window-costs-test-secret";
 
+// Load DB-backed modules only after the test DATA_DIR and secrets are set.
 const core = await import("../../src/lib/db/core.ts");
 const apiKeys = await import("../../src/lib/db/apiKeys.ts");
 const { updatePricing } = await import("@/lib/db/settings");
@@ -19,6 +20,9 @@ const usageHistory = await import("../../src/lib/usage/usageHistory.ts");
 const costRules = await import("../../src/domain/costRules.ts");
 const { getProviderWindowCostBreakdown } =
   await import("../../src/lib/usage/providerWindowCosts.ts");
+const { getUsageStats, getConnectionSpendUsdSinceAdded } =
+  await import("../../src/lib/usage/usageStats.ts");
+const { createProviderNode } = await import("../../src/lib/db/providers/nodes.ts");
 
 async function resetStorage() {
   core.resetDbInstance();
@@ -570,3 +574,157 @@ test("provider window costs aggregate many usage rows in SQL without per-row sca
   assert.equal(result.rows[0].models.length, 1);
   assert.equal(result.rows[0].models[0].requests, 250);
 });
+
+for (const scenario of [
+  { name: "two short prompts", inputs: [60_000, 60_000], output: 0, expectedCost: 0.012 },
+  {
+    name: "mixed short and long prompts",
+    inputs: [60_000, 60_000, 120_000],
+    output: 1_000,
+    expectedCost: 0.0755,
+  },
+]) {
+  test(`Haiku aggregate costs preserve per-request tiers for ${scenario.name}`, async (t) => {
+    const now = Date.parse("2026-10-08T12:00:00.000Z");
+    t.mock.timers.enable({ apis: ["Date"], now });
+    await localDb.updatePricing({
+      anthropic: {
+        "claude-haiku-5-5": {
+          input: 0.1,
+          output: 0.5,
+          long_context: { threshold: 100_000, input: 0.5, output: 2.5 },
+        },
+      },
+    });
+    const key = await apiKeys.createApiKey("Haiku Key", "machine-haiku-tiers");
+    const minuteStart = now - 60_000;
+    for (const [index, input] of scenario.inputs.entries()) {
+      await usageHistory.saveRequestUsage({
+        provider: "anthropic",
+        model: "claude-haiku-5-5",
+        connectionId: "haiku-conn",
+        apiKeyId: key.id,
+        apiKeyName: "Haiku Key",
+        tokens: { input, output: scenario.output },
+        timestamp: new Date(minuteStart + index * 1_000).toISOString(),
+      });
+    }
+
+    const requests = scenario.inputs.length;
+    const promptTokens = scenario.inputs.reduce((sum, input) => sum + input, 0);
+    const completionTokens = requests * scenario.output;
+    const window = await getProviderWindowCostBreakdown({
+      provider: "anthropic",
+      connectionId: "haiku-conn",
+      now,
+    });
+    assert.equal(window.totalCostUsd, scenario.expectedCost);
+    assert.equal(window.rows.length, 1);
+    assert.equal(window.rows[0].requests, requests);
+    assert.equal(window.rows[0].promptTokens, promptTokens);
+    assert.equal(window.rows[0].completionTokens, completionTokens);
+    assert.equal(window.rows[0].models.length, 1);
+    assert.equal(window.rows[0].models[0].requests, requests);
+    assert.equal(window.rows[0].models[0].costUsd, scenario.expectedCost);
+
+    const stats = await getUsageStats();
+    assert.ok(Math.abs(stats.totalCost - scenario.expectedCost) < 1e-12);
+    assert.equal(stats.totalRequests, requests);
+    assert.equal(stats.totalPromptTokens, promptTokens);
+    assert.equal(stats.totalCompletionTokens, completionTokens);
+    assert.equal(Object.keys(stats.byModel).length, 1);
+    assert.equal(Object.keys(stats.byAccount).length, 1);
+    assert.equal(Object.keys(stats.byApiKey).length, 1);
+    for (const breakdown of [stats.byProvider, stats.byModel, stats.byAccount, stats.byApiKey]) {
+      const bucket = Object.values(breakdown)[0];
+      assert.ok(Math.abs(bucket.cost - scenario.expectedCost) < 1e-12);
+      assert.equal(bucket.requests, requests);
+      assert.equal(bucket.promptTokens, promptTokens);
+      assert.equal(bucket.completionTokens, completionTokens);
+    }
+    const recent = stats.last10Minutes.filter((bucket) => bucket.requests > 0);
+    assert.equal(recent.length, 1);
+    assert.equal(recent[0].requests, requests);
+    assert.ok(Math.abs(recent[0].cost - scenario.expectedCost) < 1e-12);
+
+    const spend = await getConnectionSpendUsdSinceAdded("anthropic", "haiku-conn");
+    assert.equal(spend.requests, requests);
+    assert.ok(Math.abs(spend.costUsd - scenario.expectedCost) < 1e-12);
+  });
+}
+
+test("usage stats retain archived billed cost when original prompt sizes are unavailable", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-08T12:00:00.000Z") });
+  await localDb.updatePricing({
+    anthropic: {
+      "claude-haiku-5-5": {
+        input: 0.1,
+        output: 0.5,
+        long_context: { threshold: 100_000, input: 0.5, output: 2.5 },
+      },
+    },
+  });
+  const db = core.getDbInstance();
+  db.prepare("INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)").run(
+    "databaseSettings",
+    "aggregation.enabled",
+    "true"
+  );
+  db.prepare(
+    `INSERT INTO daily_usage_summary
+    (provider, model, date, total_requests, total_input_tokens, total_output_tokens, total_cost)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run("anthropic", "claude-haiku-5-5", "2020-01-01", 2, 120_000, 0, 0.012);
+  await usageHistory.saveRequestUsage({
+    provider: "anthropic",
+    model: "claude-haiku-5-5",
+    tokens: { input: 60_000, output: 0 },
+    timestamp: "2026-10-08T11:59:00.000Z",
+  });
+
+  const stats = await getUsageStats();
+  assert.ok(Math.abs(stats.totalCost - 0.018) < 1e-12);
+  assert.equal(stats.totalRequests, 3);
+  assert.equal(stats.totalPromptTokens, 180_000);
+  assert.equal(Object.keys(stats.byModel).length, 1);
+  assert.ok(Math.abs(stats.byModel["claude-haiku-5-5 (anthropic)"].cost - 0.018) < 1e-12);
+});
+
+for (const type of ["anthropic-compatible", "openai-compatible", "openai-compatible-responses"]) {
+  test(`${type} unknown custom models retain the fixed $2/$10 aggregate estimate`, async (t) => {
+    const now = Date.parse("2026-10-08T12:00:00.000Z");
+    t.mock.timers.enable({ apis: ["Date"], now });
+    const node = await createProviderNode({
+      id: `${type}-aggregate-cost`,
+      type,
+      name: "Custom aggregate upstream",
+      baseUrl: "https://custom-upstream.example/v1",
+    });
+    assert.ok(typeof node.id === "string");
+    const key = await apiKeys.createApiKey("Custom Key", "machine-custom-aggregate");
+    for (let index = 0; index < 2; index++) {
+      await usageHistory.saveRequestUsage({
+        provider: node.id,
+        model: "unlisted-custom-model",
+        connectionId: "custom-aggregate-conn",
+        apiKeyId: key.id,
+        apiKeyName: "Custom Key",
+        tokens: { input: 60_000, output: 1_000 },
+        timestamp: new Date(now - 60_000 + index * 1_000).toISOString(),
+      });
+    }
+
+    const window = await getProviderWindowCostBreakdown({ provider: node.id, now });
+    assert.equal(window.totalCostUsd, 0.26);
+    assert.equal(window.rows.length, 1);
+    assert.equal(window.rows[0].models.length, 1);
+    assert.equal(window.rows[0].requests, 2);
+    const stats = await getUsageStats();
+    assert.ok(Math.abs(stats.totalCost - 0.26) < 1e-12);
+    assert.equal(stats.totalRequests, 2);
+    assert.equal(Object.keys(stats.byModel).length, 1);
+    const spend = await getConnectionSpendUsdSinceAdded(node.id, "custom-aggregate-conn");
+    assert.equal(spend.requests, 2);
+    assert.ok(Math.abs(spend.costUsd - 0.26) < 1e-12);
+  });
+}

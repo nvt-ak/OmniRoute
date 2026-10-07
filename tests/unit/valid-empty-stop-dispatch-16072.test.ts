@@ -114,7 +114,7 @@ await test.describe("#16072 executed empty-terminal contract", async () => {
     assert.equal(getModelLockoutInfo("openai", String(connection.id), "gpt-4.1"), null);
   });
 
-  const codexConnection = await providers.createProviderConnection({
+  await providers.createProviderConnection({
     provider: "codex",
     authType: "oauth",
     name: "empty-terminal-codex",
@@ -212,13 +212,6 @@ await test.describe("#16072 executed empty-terminal contract", async () => {
       connection,
     },
     {
-      name: "Codex native Responses",
-      model: "codex/gpt-5.4",
-      url: "https://chatgpt.com/backend-api/codex/responses",
-      payload: completedResponses,
-      connection: codexConnection,
-    },
-    {
       name: "OpenRouter",
       model: "openrouter/openai/gpt-4.1",
       url: "https://openrouter.ai/api/v1/chat/completions",
@@ -243,6 +236,22 @@ await test.describe("#16072 executed empty-terminal contract", async () => {
       assert.notEqual(current?.testStatus, "unavailable");
     });
   }
+
+  test("Codex completed empty native Responses falls through to the combo sibling", async () => {
+    await createCombo({
+      name: "codex-empty-native-fallback",
+      strategy: "priority",
+      models: ["codex/gpt-5.4", "openai/gpt-4o"],
+    });
+    const { response, text, calls } = await requestStream(
+      "codex-empty-native-fallback",
+      completedResponses,
+      "https://chatgpt.com/backend-api/codex/responses"
+    );
+    assert.equal(response.status, 200, text);
+    assert.match(text, /visible fallback/);
+    assert.equal(calls.length, 2);
+  });
 
   test("#16072 Codex created then EOF cannot use a translated synthetic stop as native proof", async () => {
     const { response, text, calls } = await requestStream(

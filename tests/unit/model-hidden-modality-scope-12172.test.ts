@@ -15,14 +15,11 @@ const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-12172-mod
 process.env.DATA_DIR = TEST_DATA_DIR;
 process.env.API_KEY_SECRET = process.env.API_KEY_SECRET || "modality-collision-test-secret";
 
-const { setModelIsHidden, getModelIsHidden, getHiddenModelsByProvider } = await import(
-  "../../src/lib/db/models.ts"
-);
+const { setModelIsHidden, getModelIsHidden, getHiddenModelsByProvider } =
+  await import("../../src/lib/db/models.ts");
 const { resetDbInstance } = await import("../../src/lib/db/core.ts");
-const { codexProvider } = await import(
-  "../../open-sse/config/providers/registry/codex/index.ts"
-);
-const { IMAGE_PROVIDERS } = await import("../../open-sse/config/imageRegistry.ts");
+const { codexProvider } = await import("../../open-sse/config/providers/registry/codex/index.ts");
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
 
 test.after(() => {
   resetDbInstance();

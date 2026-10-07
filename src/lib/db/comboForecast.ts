@@ -11,6 +11,7 @@ export type ComboForecastUsageRow = {
   requests: number;
   successCount: number;
   inputTokens: number;
+  pricingInputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
@@ -31,6 +32,7 @@ type ComboForecastUsageSqlRow = {
   requests: number | null;
   successCount: number | null;
   inputTokens: number | null;
+  pricingInputTokens: number | null;
   outputTokens: number | null;
   cacheReadTokens: number | null;
   cacheCreationTokens: number | null;
@@ -79,6 +81,7 @@ export function getComboForecastUsageRows(opts: {
          connection_id as connectionId,
          COUNT(*) as requests,
          SUM(CASE WHEN status >= 200 AND status < 400 THEN 1 ELSE 0 END) as successCount,
+         COALESCE(tokens_in, 0) as pricingInputTokens,
          COALESCE(SUM(tokens_in), 0) as inputTokens,
          COALESCE(SUM(tokens_out), 0) as outputTokens,
          COALESCE(SUM(tokens_cache_read), 0) as cacheReadTokens,
@@ -89,7 +92,7 @@ export function getComboForecastUsageRows(opts: {
          MAX(timestamp) as lastUsedAt
        FROM call_logs
        WHERE ${conditions.join(" AND ")}
-       GROUP BY combo_name, executionKey, combo_step_id, provider, model, requested_model, connection_id
+       GROUP BY combo_name, executionKey, combo_step_id, provider, model, requested_model, connection_id, COALESCE(tokens_in, 0)
        ORDER BY combo_name ASC, requests DESC`
     )
     .all(params) as ComboForecastUsageSqlRow[];
@@ -108,6 +111,7 @@ export function getComboForecastUsageRows(opts: {
     requests: toNumber(row.requests),
     successCount: toNumber(row.successCount),
     inputTokens: toNumber(row.inputTokens),
+    pricingInputTokens: toNumber(row.pricingInputTokens),
     outputTokens: toNumber(row.outputTokens),
     cacheReadTokens: toNumber(row.cacheReadTokens),
     cacheCreationTokens: toNumber(row.cacheCreationTokens),

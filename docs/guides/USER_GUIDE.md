@@ -418,7 +418,7 @@ When you no longer need OmniRoute, we provide two quick scripts for a clean remo
 
 ```bash
 git clone https://github.com/diegosouzapw/OmniRoute.git
-cd OmniRoute && npm install && npm run build
+cd OmniRoute && ONNXRUNTIME_NODE_INSTALL=skip npm install && npm run build
 
 export JWT_SECRET="your-secure-secret-change-this"
 export INITIAL_PASSWORD="your-password"

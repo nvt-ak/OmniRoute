@@ -136,3 +136,18 @@ for (const reason of ["pause_turn", "model_context_window_exceeded"]) {
     assert.equal(released.sawLegitEmptyTerminal(), false, "default set stays as released");
   });
 }
+test("reasoning progress preserves terminal lifecycle and trailing usage tracking", () => {
+  const watcher = createStreamContentWatcher();
+  watcher.note(wireDelta({ type: "thinking_delta", thinking: "" }));
+  assert.equal(watcher.sawContent(), false);
+  assert.equal(watcher.sawClaudeContentBlock(), true);
+  watcher.note('event: message_stop\ndata: {"note":"message_stop"}\n\n');
+  assert.equal(watcher.sawClaudeMessageStop(), false);
+  watcher.note('data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n');
+  watcher.note('data: {"type":"message_stop"}\n\n');
+  watcher.note('data: {"usage":{"output_tokens":4}}\n\n');
+  watcher.finish();
+  assert.equal(watcher.lastStopReason(), "end_turn");
+  assert.equal(watcher.sawClaudeMessageStop(), true);
+  assert.deepEqual(watcher.usage(), { output_tokens: 4 });
+});

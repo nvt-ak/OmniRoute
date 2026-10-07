@@ -33,7 +33,7 @@ import {
 import { handleImageUpscale } from "../../open-sse/handlers/imageUpscale.ts";
 import { handleStabilityImageUpscale } from "../../open-sse/handlers/imageUpscale/stability.ts";
 import { handleTopazImageUpscale } from "../../open-sse/handlers/imageUpscale/topaz.ts";
-import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistry.ts";
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
 import { setPinnedFetchTestOverride } from "../../src/shared/network/remoteImageFetch.ts";
 
 // ── Fixtures ───────────────────────────────────────────────────────────────

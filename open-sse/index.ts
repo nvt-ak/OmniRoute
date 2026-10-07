@@ -98,12 +98,8 @@ export {
 
 // Image Generation
 export { handleImageGeneration } from "./handlers/imageGeneration.ts";
-export {
-  IMAGE_PROVIDERS,
-  getImageProvider,
-  parseImageModel,
-  getAllImageModels,
-} from "./config/imageRegistry.ts";
+export { IMAGE_PROVIDERS } from "./config/imageRegistryData.ts";
+export { getImageProvider, parseImageModel, getAllImageModels } from "./config/imageRegistry.ts";
 
 // Think Tag Parser
 export {

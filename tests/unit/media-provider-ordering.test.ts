@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistry.ts";
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
 import { VIDEO_PROVIDERS } from "../../open-sse/config/videoRegistry.ts";
 import { toProviderModels } from "../../src/app/(dashboard)/dashboard/cache/media/mediaProviderModels.ts";
 

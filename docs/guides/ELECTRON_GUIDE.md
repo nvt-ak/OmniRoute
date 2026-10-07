@@ -308,14 +308,14 @@ Releases are published to GitHub Releases (`diegosouzapw/OmniRoute`), which is a
 
 ## Troubleshooting
 
-| Symptom                                                         | Fix                                                                                                                                                     |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Cannot find module 'better-sqlite3'` after Electron major bump | better-sqlite3 v13 ships Node-API prebuilds — re-run `npm install` at the root and `prepare:bundle` (it verifies the prebuild for the current platform) |
-| `ERR_DLOPEN_FAILED` for native module                           | Re-run `prepare:bundle` — it fails fast when the Node-API prebuild for the current platform is missing                                                  |
-| Window appears blank on Linux                                   | Confirm Next.js server actually bound to PORT (check `[Server]` logs)                                                                                   |
-| macOS notarization stalls                                       | Ensure `APPLE_*` vars are exported, not just in `.env`                                                                                                  |
-| Windows SmartScreen warning                                     | Sign with EV cert, or users right-click → "Run anyway"                                                                                                  |
-| Smoke test fails with port-in-use                               | Stop any local dev server on 20128 before running `electron:smoke:packaged`                                                                             |
+| Symptom                                                         | Fix                                                                                                                                                                                   |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Cannot find module 'better-sqlite3'` after Electron major bump | better-sqlite3 v13 ships Node-API prebuilds — re-run `ONNXRUNTIME_NODE_INSTALL=skip npm install` at the root and `prepare:bundle` (it verifies the prebuild for the current platform) |
+| `ERR_DLOPEN_FAILED` for native module                           | Re-run `prepare:bundle` — it fails fast when the Node-API prebuild for the current platform is missing                                                                                |
+| Window appears blank on Linux                                   | Confirm Next.js server actually bound to PORT (check `[Server]` logs)                                                                                                                 |
+| macOS notarization stalls                                       | Ensure `APPLE_*` vars are exported, not just in `.env`                                                                                                                                |
+| Windows SmartScreen warning                                     | Sign with EV cert, or users right-click → "Run anyway"                                                                                                                                |
+| Smoke test fails with port-in-use                               | Stop any local dev server on 20128 before running `electron:smoke:packaged`                                                                                                           |
 
 ## See Also
 

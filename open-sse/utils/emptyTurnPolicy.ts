@@ -39,7 +39,9 @@ function executionProtocol(response: Response, requestUrl: string): NativeProtoc
     if (azure) return azure;
     // These are protocol-native endpoints already used by the executors. A
     // compatible node or overridden base URL does not inherit their policy.
-    for (const id of ["openai", "anthropic", "codex", "openrouter"]) {
+    // Codex empty completions retain the release failure guard even on its
+    // authenticated native endpoint; a normal terminal is not usable output.
+    for (const id of ["openai", "anthropic", "openrouter"]) {
       const entry = getRegistryEntry(id);
       if (!entry?.baseUrl) continue;
       const expected = new URL(entry.baseUrl);
@@ -136,21 +138,39 @@ export function markEmptyTurnExecution(
     failed: false,
   };
   const decoder = new TextDecoder();
-  const isSse = (response.headers.get("content-type") || "").includes("text/event-stream");
+  // Some transports (Codex HTTP via the proxy/TLS fetch path) deliver the SSE
+  // body without a content-type header. Treating that as JSON buffers the whole
+  // stream into one failed JSON.parse, so a valid `response.completed` never
+  // establishes the normal stop. With no declared type, sniff the first byte.
+  const contentType = (response.headers.get("content-type") || "").toLowerCase();
+  let isSse: boolean | null = contentType.includes("text/event-stream")
+    ? true
+    : contentType
+      ? false
+      : null;
   let pending = "";
   function consume(text: string, done = false) {
     if (state.failed) return;
     pending += text;
+    if (isSse === null) {
+      const head = pending.trimStart();
+      if (!head) {
+        if (!done) return;
+      } else {
+        isSse = head[0] !== "{" && head[0] !== "[";
+      }
+    }
     if (pending.length > MAX_FRAME_CHARS) {
       state.failed = true;
       pending = "";
       return;
     }
-    if (!isSse && !done) return;
-    const parts = isSse ? pending.split(/\r?\n/) : [pending];
-    pending = isSse && !done ? parts.pop() || "" : "";
+    const sse = isSse === true;
+    if (!sse && !done) return;
+    const parts = sse ? pending.split(/\r?\n/) : [pending];
+    pending = sse && !done ? parts.pop() || "" : "";
     for (const part of parts) {
-      observePart(state, part, isSse);
+      observePart(state, part, sse);
     }
   }
   const body = response.body.pipeThrough(

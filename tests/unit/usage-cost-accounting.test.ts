@@ -31,6 +31,9 @@ const { saveRequestUsage } = await import("../../src/lib/usage/usageHistory.ts")
 const { getUsageStats, getConnectionSpendUsdSinceAdded } =
   await import("../../src/lib/usage/usageStats.ts");
 const { getApiKeyUsageLimitStatus } = await import("../../src/lib/usage/apiKeyUsageLimits.ts");
+// Load after DATA_DIR setup, just like the other DB-backed modules above.
+const { getProviderWindowCostBreakdown } =
+  await import("../../src/lib/usage/providerWindowCosts.ts");
 const { rollupUsageHistoryBeforeDate } = await import("../../src/lib/usage/aggregateHistory.ts");
 const { updateDatabaseSettings } = await import("../../src/lib/db/databaseSettings.ts");
 const { updatePricing } = await import("../../src/lib/db/settings/pricing.ts");
@@ -194,6 +197,60 @@ test("a failed request from a token-billed provider still costs its tokens", asy
     .get(key.id);
   assert.deepEqual(stored, { provider_cost_usd: null });
   assert.equal((await getUsageStats()).byApiKey[`id:${key.id}`].cost, 0.25);
+});
+
+test("reported costs and zero-cost requests coexist with per-request context tiers", async () => {
+  const key = await createApiKey("Mixed context costs", "machine-mixed-context");
+  await updatePricing({
+    anthropic: {
+      "claude-haiku-5-5": {
+        input: 0.1,
+        output: 0.5,
+        long_context: { threshold: 100_000, input: 0.5, output: 2.5 },
+      },
+    },
+  });
+  const now = Date.now();
+  const requests = [
+    { prompt_tokens: 60_000, completion_tokens: 1_000 },
+    { prompt_tokens: 60_000, completion_tokens: 1_000 },
+    { prompt_tokens: 120_000, completion_tokens: 1_000 },
+    { prompt_tokens: 120_000, completion_tokens: 1_000, cost_usd: 0.0042 },
+    { prompt_tokens: 60_000, completion_tokens: 1_000, cost_usd: 0 },
+  ];
+  // Separate physical requests must not share the writer's natural dedup key.
+  for (const [index, tokens] of requests.entries()) {
+    await saveRequestUsage({
+      provider: "anthropic",
+      model: "claude-haiku-5-5",
+      connectionId: "mixed-context-conn",
+      apiKeyId: key.id,
+      timestamp: new Date(now - 10_000 + index * 1_000).toISOString(),
+      tokens,
+    });
+  }
+
+  // Only the three unreported requests are priced: two short + one long.
+  const expectedCost = 0.0755 + 0.0042;
+  const limits = await getApiKeyUsageLimitStatus({ id: key.id });
+  assert.ok(Math.abs(limits.dailySpentUsd - expectedCost) < 1e-9);
+  assert.ok(Math.abs(limits.weeklySpentUsd - expectedCost) < 1e-9);
+  const stats = (await getUsageStats()).byApiKey[`id:${key.id}`];
+  assert.ok(Math.abs(stats.cost - expectedCost) < 1e-9);
+  assert.equal(stats.requests, 5);
+  assert.equal(stats.promptTokens, 420_000);
+  const connection = await getConnectionSpendUsdSinceAdded("anthropic", "mixed-context-conn");
+  assert.ok(Math.abs(connection.costUsd - expectedCost) < 1e-9);
+  assert.equal(connection.requests, 5);
+  const window = await getProviderWindowCostBreakdown({
+    provider: "anthropic",
+    connectionId: "mixed-context-conn",
+    now,
+  });
+  assert.ok(Math.abs(window.totalCostUsd - expectedCost) < 1e-9);
+  assert.equal(window.rows.length, 1);
+  assert.equal(window.rows[0].requests, 5);
+  assert.equal(window.rows[0].models.length, 1);
 });
 
 test("a retention rollup archives reported costs and prices only unreported requests", async () => {

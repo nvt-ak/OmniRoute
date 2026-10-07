@@ -161,6 +161,7 @@ const SAFE_PUBLIC_ERROR_IDENTIFIERS = new Set([
   "missing_cookie",
   "missing_credentials",
   "missing_credits",
+  "missing_pricing",
   "missing_project_id",
   "missing_session_id",
   "missing_tool_name",

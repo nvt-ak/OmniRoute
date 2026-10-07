@@ -30,7 +30,9 @@ test("Claude Sonnet 5.5 rejects disabled thinking and forced tool choice", () =>
     { model: MODEL_ID, thinking: { type: "disabled" }, marker: true },
     MODEL_ID
   );
-  assert.equal("thinking" in withoutDisabled, false);
+  // Upstream 400 advises "Use thinking.type.between_tools for the lowest
+  // thinking setting"; disabled is rewritten rather than dropped to adaptive.
+  assert.deepEqual(withoutDisabled.thinking, { type: "between_tools" });
   assert.equal(withoutDisabled.marker, true);
 
   for (const toolChoice of [

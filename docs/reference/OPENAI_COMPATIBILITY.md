@@ -68,6 +68,12 @@ non-2xx response before the stream starts as an ordinary JSON error. A provider
 failure during dispatch is returned through OmniRoute's sanitized error shape;
 raw upstream stacks and credential material are not exposed.
 
+Codex completions with no usable output remain upstream failures even when a
+successful terminal event reports positive output or reasoning token usage.
+Authenticated execution alone does not exempt Codex from that guard. Real
+text, tool calls, refusal text, and supported compaction output remain valid;
+reasoning progress alone keeps a stream live but is not a completed answer.
+
 Typical client-visible statuses are `400` for validation or unsupported request
 shape, `401` for authentication, `403` for policy/key permission failures,
 `404` for unknown routes or models, `409` for request conflicts, `429` for rate

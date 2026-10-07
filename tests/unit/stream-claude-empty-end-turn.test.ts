@@ -10,6 +10,8 @@ import { createStreamController, pipeWithDisconnect } from "../../open-sse/utils
 import { validateResponseQuality } from "../../open-sse/services/combo/validateQuality.ts";
 import { isEmptyContentResponse } from "../../open-sse/services/errorClassifier.ts";
 import { FORMATS } from "../../open-sse/translator/formats.ts";
+import { markEmptyTurnExecution } from "../../open-sse/utils/emptyTurnPolicy.ts";
+import { getRegistryEntry } from "../../open-sse/config/providerRegistry.ts";
 import {
   detectMalformedNonStream,
   describeMalformedNonStream,
@@ -69,6 +71,14 @@ function response(text: string, fragmented = false): Response {
   );
 }
 
+function nativeResponse(text: string, fragmented = false): Response {
+  return markEmptyTurnExecution(
+    response(text, fragmented),
+    getRegistryEntry("anthropic")!.baseUrl!,
+    { connectionId: "native-test-connection", apiKey: "native-test-key" }
+  );
+}
+
 function transform() {
   return createSSEStream({
     mode: "passthrough",
@@ -85,7 +95,10 @@ for (const reason of ["end_turn", "stop_sequence"]) {
     const expected = emptyTurn(reason);
     for (const fragmented of [false, true]) {
       for (const trailingNewline of [false, true]) {
-        const upstream = response(trailingNewline ? expected : expected.trimEnd(), fragmented);
+        const upstream = nativeResponse(
+          trailingNewline ? expected : expected.trimEnd(),
+          fragmented
+        );
         const controller = createStreamController({
           provider: "anthropic",
           model: "claude-sonnet-4-6",
@@ -119,10 +132,19 @@ for (const reason of ["end_turn", "stop_sequence"]) {
       model: "claude-sonnet-4-6",
       clientResponseFormat: FORMATS.CLAUDE,
     });
-    const watched = pipeWithDisconnect(response(text, true), new TransformStream(), controller);
+    const watched = pipeWithDisconnect(
+      nativeResponse(text, true),
+      new TransformStream(),
+      controller
+    );
     assert.equal(await new Response(watched).text(), text);
     const quality = await validateResponseQuality(
-      response(text, true), true, log, undefined, undefined, true
+      response(text, true),
+      true,
+      log,
+      undefined,
+      undefined,
+      true
     );
     assert.equal(quality.valid, true, quality.reason);
     assert.equal(await quality.clonedResponse!.text(), text);
@@ -132,9 +154,45 @@ for (const reason of ["end_turn", "stop_sequence"]) {
 test("native Claude empty SSE is not trusted by the combo gate without credential or provider evidence", async () => {
   for (const reason of ["end_turn", "stop_sequence"]) {
     const quality = await validateResponseQuality(
-      response(emptyTurn(reason), true), true, log, undefined, undefined, false
+      response(emptyTurn(reason), true),
+      true,
+      log,
+      undefined,
+      undefined,
+      false
     );
     assert.equal(quality.valid, false);
+  }
+});
+
+test("native Claude watcher rejects empty lifecycles without authenticated official-origin execution", async () => {
+  for (const reason of ["end_turn", "stop_sequence"]) {
+    const text = emptyTurn(reason);
+    const nativeUrl = getRegistryEntry("anthropic")!.baseUrl!;
+    for (const [url, credentials] of [
+      [nativeUrl, {}],
+      [nativeUrl, { apiKey: "native-test-key" }],
+      [nativeUrl, { connectionId: "native-test-connection" }],
+      [
+        "https://compatible.example/v1/messages",
+        {
+          connectionId: "native-test-connection",
+          apiKey: "native-test-key",
+        },
+      ],
+    ] as const) {
+      const upstream = markEmptyTurnExecution(response(text, true), url, credentials);
+      const watched = pipeWithDisconnect(
+        upstream,
+        new TransformStream(),
+        createStreamController({
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          clientResponseFormat: FORMATS.CLAUDE,
+        })
+      );
+      assert.match(await new Response(watched).text(), /"type":"error"/);
+    }
   }
 });
 
@@ -181,7 +239,7 @@ test("native Claude watcher does not mistake message_delta, a bare stop header o
         clientResponseFormat: FORMATS.CLAUDE,
       });
       const watched = pipeWithDisconnect(
-        response(emptyTurn(reason, false) + suffix, true),
+        nativeResponse(emptyTurn(reason, false) + suffix, true),
         new TransformStream(),
         controller
       );
@@ -225,7 +283,7 @@ test("native Claude clean stops do not hide upstream errors or empty text blocks
       clientResponseFormat: FORMATS.CLAUDE,
     });
     const watched = pipeWithDisconnect(
-      response(emptyBlock, true),
+      nativeResponse(emptyBlock, true),
       new TransformStream(),
       controller
     );

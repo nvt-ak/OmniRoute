@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { pricingFieldsSchema, updatePricingSchema } from "@/shared/validation/schemas/pricing";
 import { extractApiErrorMessage } from "@/shared/http/apiErrorMessage";
+import { getDefaultPricing } from "@/shared/constants/pricing";
 
 const root = join(import.meta.dirname, "../..");
 const pricingTab = readFileSync(
@@ -84,5 +85,34 @@ describe("pricing save surfaces actionable errors (#12494)", () => {
     assert.match(pricingTab, /extractApiErrorMessage\(errorPayload, t\("saveFailed"\)\)/);
     assert.match(pricingTab, /extractApiErrorMessage\(errorPayload, t\("resetFailed"\)\)/);
     assert.doesNotMatch(pricingTab, /errorPayload\.error \|\|/);
+  });
+});
+
+describe("context-tier pricing round-trip", () => {
+  it("accepts the canonical Haiku 5.5 tier unchanged on pricing save", () => {
+    const entry = getDefaultPricing().anthropic["claude-haiku-5-5"];
+    assert.deepEqual(pricingFieldsSchema.parse(entry), entry);
+    const body = { anthropic: { "claude-haiku-5-5": entry } };
+    assert.deepEqual(updatePricingSchema.parse(body), body);
+  });
+
+  it("allows explicitly clearing an inherited context tier", () => {
+    const entry = { input: 1, output: 5, long_context: null };
+    assert.deepEqual(pricingFieldsSchema.parse(entry), entry);
+  });
+
+  it("rejects malformed thresholds, rates and unknown nested fields", () => {
+    for (const long_context of [
+      { threshold: -1, input: 0.5, output: 2.5 },
+      { threshold: 1.5, input: 0.5, output: 2.5 },
+      { threshold: 100_000, input: -0.5, output: 2.5 },
+      { threshold: 100_000, input: 0.5, output: 2.5, typo: 1 },
+      { threshold: "100000", input: 0.5, output: 2.5 },
+    ]) {
+      assert.equal(
+        pricingFieldsSchema.safeParse({ input: 0.1, output: 0.5, long_context }).success,
+        false
+      );
+    }
   });
 });

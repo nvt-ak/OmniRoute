@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
 
 // ─── Provider Registrations ─────────────────────────────────────────────────
 
@@ -59,19 +60,16 @@ test("leonardo video provider is in video registry", async () => {
 // ─── Image Registry ─────────────────────────────────────────────────────────
 
 test("haiper image provider is in image registry", async () => {
-  const { IMAGE_PROVIDERS } = await import("../../open-sse/config/imageRegistry.ts");
   assert.ok(IMAGE_PROVIDERS.haiper, "haiper should be in IMAGE_PROVIDERS");
   assert.equal(IMAGE_PROVIDERS.haiper.format, "haiper-image");
 });
 
 test("leonardo image provider is in image registry", async () => {
-  const { IMAGE_PROVIDERS } = await import("../../open-sse/config/imageRegistry.ts");
   assert.ok(IMAGE_PROVIDERS.leonardo, "leonardo should be in IMAGE_PROVIDERS");
   assert.equal(IMAGE_PROVIDERS.leonardo.format, "leonardo-image");
 });
 
 test("ideogram image provider is in image registry", async () => {
-  const { IMAGE_PROVIDERS } = await import("../../open-sse/config/imageRegistry.ts");
   assert.ok(IMAGE_PROVIDERS.ideogram, "ideogram should be in IMAGE_PROVIDERS");
   assert.equal(IMAGE_PROVIDERS.ideogram.format, "ideogram-image");
 });

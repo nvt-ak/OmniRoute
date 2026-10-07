@@ -5,7 +5,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CALL_LOG_SETTLE_TIMEOUT_MS } from "../helpers/callLogSettle.ts";
-import { buildClaudePassthroughBody } from "../../open-sse/handlers/chatCore/claudePassthroughBody.ts";
 const TEST_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-chatcore-translation-"));
 const TEST_DATA_DIR = path.join(TEST_ROOT, "data");
 const TEST_PLUGINS_DIR = path.join(TEST_ROOT, "plugins");
@@ -15,6 +14,10 @@ fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 fs.mkdirSync(TEST_PLUGINS_DIR, { recursive: true });
 process.env.DATA_DIR = TEST_DATA_DIR;
 process.env.OMNIROUTE_PLUGINS_DIR = TEST_PLUGINS_DIR;
+// Keep runtime imports after the temporary paths: this helper's transitive imports
+// resolve dataPaths, which otherwise pins SQLite to the preloaded suite directory.
+const { buildClaudePassthroughBody } =
+  await import("../../open-sse/handlers/chatCore/claudePassthroughBody.ts");
 const core = await import("../../src/lib/db/core.ts");
 const providersDb = await import("../../src/lib/db/providers.ts");
 const settingsDb = await import("../../src/lib/db/settings.ts");
@@ -3551,7 +3554,12 @@ test("chatCore caches streaming response and serves cache HIT on repeat", async 
   await first.result.response.text();
   await flushAsyncSideEffects();
 
-  // Second request with same body should get cache HIT (JSON, not SSE)
+  assert.ok(
+    getCachedResponse(generateSignature("gpt-4o-mini", sharedBody.messages, 0, 1)),
+    "completed streaming response should populate the exact cache"
+  );
+
+  // Second request with same body should get a cache HIT replayed as SSE.
   const second = await invokeChatCore({
     provider: "openai",
     model: "gpt-4o-mini",
@@ -3684,7 +3692,12 @@ test("chatCore returns cache HIT as SSE when the client requests streaming", asy
     },
   });
 
-  // Second: streaming request should still get cache HIT as JSON
+  assert.ok(
+    getCachedResponse(generateSignature("gpt-4o-mini", sharedBody.messages, 0, 1)),
+    "non-streaming response should populate the exact cache before SSE replay"
+  );
+
+  // Second: a streaming request should replay the cached JSON completion as SSE.
   const second = await invokeChatCore({
     provider: "openai",
     model: "gpt-4o-mini",

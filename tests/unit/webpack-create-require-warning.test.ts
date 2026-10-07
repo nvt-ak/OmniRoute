@@ -1,10 +1,22 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
+import {
+  createSourceFile,
+  createPrinter,
+  factory,
+  isFunctionDeclaration,
+  isImportDeclaration,
+  isStringLiteral,
+  isVariableStatement,
+  ModuleKind,
+  ScriptTarget,
+  transpileModule,
+} from "typescript";
 
 interface WebpackStats {
   hasErrors(): boolean;
@@ -33,6 +45,47 @@ function renderIssue(issue: unknown): string {
   }
   return JSON.stringify(issue);
 }
+function codexLoaderFixture(): string {
+  const source = createSourceFile(
+    "codex.ts",
+    fs.readFileSync(path.resolve("open-sse/executors/codex.ts"), "utf8"),
+    ScriptTarget.ES2022,
+    true
+  );
+  // Compile the production loader and transport getter without the unrelated
+  // executor graph. Select AST declarations, not a reimplementation or source
+  // spelling assertion: changes to the loader run in the emitted fixture.
+  const declarations: Record<string, true> = {
+    _wreqRequire: true,
+    _websocketFn: true,
+    _wreqChecked: true,
+    _websocketOverride: true,
+    getCodexWebSocketTransport: true,
+    getCodexAppServerWebsocketTransport: true,
+  };
+  const statements = source.statements.filter((statement) => {
+    if (isImportDeclaration(statement) && isStringLiteral(statement.moduleSpecifier)) {
+      return ["module", "node:module", "./codex/wreqLoader.ts"].includes(
+        statement.moduleSpecifier.text
+      );
+    }
+    if (isFunctionDeclaration(statement)) {
+      return !!statement.name && declarations[statement.name.text] === true;
+    }
+    return (
+      isVariableStatement(statement) &&
+      statement.declarationList.declarations.some(
+        (declaration) => declarations[declaration.name.getText(source)] === true
+      )
+    );
+  });
+  const printer = createPrinter();
+  return `${printer.printFile(factory.updateSourceFile(source, statements))}
+export function loadRuntimeDependency(specifier: string): unknown {
+  return loadDynamicModule(_wreqRequire, specifier);
+}
+`;
+}
 
 async function compileRuntimeRequireModules(): Promise<string[]> {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-webpack-create-require-"));
@@ -43,12 +96,16 @@ async function compileRuntimeRequireModules(): Promise<string[]> {
     "open-sse/utils/tlsClient.ts",
     // Owns the wreq-js createRequire loader that tlsClient.ts imports.
     "open-sse/utils/browserProfiles.ts",
+    "open-sse/executors/codex.ts",
   ] as const;
   const entries: Record<string, string> = {};
 
   try {
     for (const sourcePath of sourcePaths) {
-      const source = fs.readFileSync(path.resolve(sourcePath), "utf8");
+      const source =
+        sourcePath === "open-sse/executors/codex.ts"
+          ? codexLoaderFixture()
+          : fs.readFileSync(path.resolve(sourcePath), "utf8");
       const output = transpileModule(source, {
         compilerOptions: {
           module: ModuleKind.ESNext,
@@ -64,6 +121,16 @@ async function compileRuntimeRequireModules(): Promise<string[]> {
       fs.writeFileSync(entryPath, output, "utf8");
       entries[entryName] = entryPath;
     }
+
+    const loaderDir = path.join(tempDir, "codex");
+    fs.mkdirSync(loaderDir);
+    fs.writeFileSync(
+      path.join(loaderDir, "wreqLoader.ts"),
+      transpileModule(
+        fs.readFileSync(path.resolve("open-sse/executors/codex/wreqLoader.ts"), "utf8"),
+        { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } }
+      ).outputText
+    );
 
     const compiler = webpack({
       devtool: false,
@@ -100,7 +167,7 @@ async function compileRuntimeRequireModules(): Promise<string[]> {
         },
         rules: [
           {
-            test: /\.js$/,
+            test: /\.(js|ts)$/,
             type: "javascript/auto",
           },
         ],
@@ -108,6 +175,7 @@ async function compileRuntimeRequireModules(): Promise<string[]> {
       output: {
         filename: "[name].js",
         path: path.join(tempDir, "dist"),
+        library: { type: "commonjs2" },
       },
       target: "node",
     });
@@ -132,6 +200,55 @@ async function compileRuntimeRequireModules(): Promise<string[]> {
 
     const report = stats.toJson({ all: false, errors: true, warnings: true });
     assert.equal(stats.hasErrors(), false, (report.errors ?? []).map(renderIssue).join("\n"));
+
+    // Deploy just the bundle away from the compilation tree. The optional
+    // dependency exists only in runtime/node_modules, with no hashed aliases.
+    const runtimeDir = path.join(tempDir, "runtime");
+    const runtimeChunks = path.join(runtimeDir, "chunks");
+    fs.mkdirSync(runtimeChunks, { recursive: true });
+    fs.copyFileSync(path.join(tempDir, "dist", "codex.js"), path.join(runtimeChunks, "codex.cjs"));
+    const runnerPath = path.join(runtimeDir, "server.cjs");
+    fs.writeFileSync(
+      runnerPath,
+      `
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const loader = require("./chunks/codex.cjs");
+const specifier = process.argv[2];
+assert.equal(loader.loadRuntimeDependency("node:path").join("one", "two"), path.join("one", "two"));
+assert.throws(() => loader.loadRuntimeDependency(specifier), { code: "MODULE_NOT_FOUND" });
+if (process.argv[3] === "installed") {
+  // Installing only after importing the bundle also proves the load is lazy.
+  const packageDir = path.join(__dirname, "node_modules", specifier);
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.writeFileSync(path.join(packageDir, "index.js"),
+    "exports.websocket = async (url) => ({ url, transport: 'runtime-package' });");
+  const transport = loader.getCodexAppServerWebsocketTransport();
+  assert.equal(typeof transport, "function");
+  transport("wss://runtime.invalid").then((socket) => {
+    assert.deepEqual(socket, { url: "wss://runtime.invalid", transport: "runtime-package" });
+    assert.equal(loader.getCodexAppServerWebsocketTransport(), transport);
+    assert.deepEqual(fs.readdirSync(path.join(__dirname, "node_modules")), [specifier]);
+  }).catch((error) => { console.error(error); process.exitCode = 1; });
+} else {
+  assert.equal(loader.getCodexAppServerWebsocketTransport(), null);
+}
+`
+    );
+    for (const scenario of ["installed", "missing"]) {
+      fs.rmSync(path.join(runtimeDir, "node_modules"), { recursive: true, force: true });
+      const result = spawnSync(process.execPath, [runnerPath, "wreq-js", scenario], {
+        // Deliberately not the entrypoint directory: resolution must anchor to argv[1].
+        cwd: tempDir,
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, `${scenario}: ${result.stdout}\n${result.stderr}`);
+      if (scenario === "installed") assert.equal(result.stderr, "");
+      else assert.match(result.stderr, /wreq-js import failed, websocket disabled/);
+    }
     return (report.warnings ?? []).map(renderIssue);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

@@ -25,7 +25,7 @@ const { getAdobeModels } =
   await import("../../src/app/api/providers/[id]/models/adobeFireflyDiscovery.ts");
 const { AUDIO_SPEECH_PROVIDERS, AUDIO_TRANSCRIPTION_PROVIDERS } =
   await import("../../open-sse/config/audioRegistry.ts");
-const { IMAGE_PROVIDERS } = await import("../../open-sse/config/imageRegistry.ts");
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
 const { VIDEO_PROVIDERS } = await import("../../open-sse/config/videoRegistry.ts");
 const { EMBEDDING_PROVIDERS } = await import("../../open-sse/config/embeddingRegistry.ts");
 const { RERANK_PROVIDERS } = await import("../../open-sse/config/rerankRegistry.ts");

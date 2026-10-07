@@ -332,8 +332,16 @@ function classifyStreamingUpstreamFailure(parsed: unknown): StreamingUpstreamFai
   // Flag it separately so opt-in recovery can prefer a sibling without a lockout.
   const emptyContent =
     normalized.message === "Provider returned empty content" || code === "empty_content";
+  // Our synthetic empty-response 502 describes this turn, not provider health.
+  // Older frames omitted the code; normalization supplies upstream_error for them.
+  const syntheticEmptyResponse =
+    type === "upstream_response_error" &&
+    (code === "empty_response" ||
+      (code === "upstream_error" &&
+        normalized.message === "Claude returned an empty response (no content block)"));
   const requestScoped =
     isContentPolicyRefusal(normalized) ||
+    syntheticEmptyResponse ||
     type === "invalid_request_error" ||
     code === "invalid_request_error" ||
     type === "context_length_exceeded" ||
@@ -392,7 +400,9 @@ export async function validateResponseQuality(
   provider?: string | null
 ): Promise<ResponseQualityResult> {
   const permitsEmptyTurn = () =>
-    typeof trustedEmptyTurn === "function" ? trustedEmptyTurn() : trustedEmptyTurn;
+    typeof trustedEmptyTurn === "function"
+      ? trustedEmptyTurn() === true
+      : trustedEmptyTurn === true;
   // Issue #3685: For Claude SSE streaming responses, use a BOUNDED PEEK to
   // detect the empty-content-block pattern (content_filter stop_reason with
   // no content_block_* events) WITHOUT de-streaming non-empty responses.
@@ -958,8 +968,10 @@ export async function validateResponseQuality(
   if (json?.object === "response") {
     if (
       !responsesApiOutputHasContent(json.output) &&
-      !(isSuccessfulResponsesCompletion(json) &&
-        (permitsEmptyTurn() || isTrustedEmptyStop(provider, "stop", json.usage)))
+      !(
+        isSuccessfulResponsesCompletion(json) &&
+        (permitsEmptyTurn() || isTrustedEmptyStop(provider, "stop", json.usage))
+      )
     )
       return { valid: false, reason: "empty_choices" };
     const status = typeof json.status === "string" ? json.status : "";

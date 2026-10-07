@@ -18,7 +18,7 @@ process.env.DATA_DIR = TEST_DATA_DIR;
 
 const { REGISTRY } = await import("../../open-sse/config/providerRegistry.ts");
 const { APIKEY_PROVIDERS } = await import("../../src/shared/constants/providers.ts");
-const { IMAGE_PROVIDERS } = await import("../../open-sse/config/imageRegistry.ts");
+import { IMAGE_PROVIDERS } from "../../open-sse/config/imageRegistryData.ts";
 const { FREE_MODEL_BUDGETS } = await import("../../open-sse/config/freeModelCatalog.ts");
 const { resolveProviderAlias, parseModel } = await import("../../open-sse/services/model.ts");
 const { sanitizeReasoningEffortForProvider } =

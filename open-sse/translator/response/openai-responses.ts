@@ -5,6 +5,7 @@
 import { register } from "../registry.ts";
 import { FORMATS } from "../formats.ts";
 import { appendToolCallArgumentDelta } from "../../utils/toolCallArguments.ts";
+import { storeClaudeThinkingBlocks } from "../../services/claudeThinkingStore.ts";
 import { translatorToolCallLifecycle } from "./openai-responses/toolCallLifecycle.ts";
 import { projectCompletedStreamError } from "../../utils/streamErrorFormat.ts";
 import { fallbackToolCallId } from "../helpers/toolCallHelper.ts";
@@ -1615,6 +1616,22 @@ function openaiResponsesToOpenAIResponseStream(chunk, state) {
   return null;
 }
 
+// The direct Claude → Responses lane bypasses claude-to-openai's capture pass.
+// Retain the original signed blocks, not the client-facing reasoning summaries.
+function flushClaudeResponsesThinking(state) {
+  if (state.claudeResponsesThinkingFlushed) return;
+  state.claudeResponsesThinkingFlushed = true;
+  if (!(state.claudeResponsesThinkingBlocks instanceof Map)) return;
+  storeClaudeThinkingBlocks({
+    toolUseIds: state.claudeResponsesToolUseIds,
+    blocks: [...state.claudeResponsesThinkingBlocks.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, block]) => block),
+    provider: state.provider,
+    model: state.model,
+  });
+}
+
 export function claudeToOpenAIResponsesResponse(chunk, state) {
   if (!chunk) return flushEvents(state);
 
@@ -1623,6 +1640,9 @@ export function claudeToOpenAIResponsesResponse(chunk, state) {
   if (chunk.type === "message_start") {
     state.responseId = `resp_${chunk.message?.id || Date.now()}`;
     state.model = chunk.message?.model;
+    state.claudeResponsesThinkingBlocks = new Map();
+    state.claudeResponsesToolUseIds = [];
+    state.claudeResponsesThinkingFlushed = false;
     const usage = chunk.message?.usage;
     if (usage && typeof usage === "object" && typeof usage.input_tokens === "number") {
       state.usage = {
@@ -1649,6 +1669,20 @@ export function claudeToOpenAIResponsesResponse(chunk, state) {
 
   if (chunk.type === "content_block_start") {
     const block = chunk.content_block;
+    if (block?.type === "thinking") {
+      state.claudeResponsesThinkingBlocks.set(chunk.index, {
+        type: "thinking",
+        thinking: typeof block.thinking === "string" ? block.thinking : "",
+        signature: typeof block.signature === "string" ? block.signature : "",
+      });
+    } else if (block?.type === "redacted_thinking") {
+      state.claudeResponsesThinkingBlocks.set(chunk.index, {
+        type: "redacted_thinking",
+        data: block.data,
+      });
+    } else if (block?.type === "tool_use") {
+      state.claudeResponsesToolUseIds.push(block.id);
+    }
     if (block?.type === "thinking" || block?.type === "redacted_thinking") {
       if (state.reasoningId && !state.reasoningDone) closeReasoning(state, emit);
       if (state.reasoningDone) resetReasoningState(state);
@@ -1676,8 +1710,12 @@ export function claudeToOpenAIResponsesResponse(chunk, state) {
     const delta = chunk.delta;
     if (delta?.type === "thinking_delta" && typeof delta.thinking === "string") {
       startReasoning(state, emit, chunk.index);
+      const tracked = state.claudeResponsesThinkingBlocks.get(chunk.index);
+      if (tracked?.type === "thinking") tracked.thinking += delta.thinking;
       emitReasoningDelta(state, emit, delta.thinking);
     } else if (delta?.type === "signature_delta" && typeof delta.signature === "string") {
+      const tracked = state.claudeResponsesThinkingBlocks.get(chunk.index);
+      if (tracked?.type === "thinking") tracked.signature += delta.signature;
       state.reasoningEncryptedContent = delta.signature;
     } else if (delta?.type === "text_delta" && typeof delta.text === "string") {
       if (state.reasoningId && !state.reasoningDone) closeReasoning(state, emit);
@@ -1716,6 +1754,7 @@ export function claudeToOpenAIResponsesResponse(chunk, state) {
       };
     }
     if (chunk.delta?.stop_reason) {
+      flushClaudeResponsesThinking(state);
       for (const index in state.msgItemAdded) closeMessage(state, emit, index);
       closeReasoning(state, emit);
       for (const index in state.funcCallIds) closeToolCall(state, emit, index);
@@ -1723,6 +1762,8 @@ export function claudeToOpenAIResponsesResponse(chunk, state) {
     }
     return events;
   }
+
+  if (chunk.type === "message_stop") flushClaudeResponsesThinking(state);
 
   return [];
 }

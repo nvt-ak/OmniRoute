@@ -21,7 +21,6 @@ terminal flags, not credentials or a URL exposed to clients.
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
 | OpenAI Chat                                      | The registered `https://api.openai.com/v1/chat/completions` endpoint                                                |
 | Anthropic Messages, including Claude connections | The registered `https://api.anthropic.com/v1/messages` endpoint                                                     |
-| Codex Responses                                  | The registered `https://chatgpt.com/backend-api/codex/responses` endpoint                                           |
 | OpenRouter Chat                                  | The registered `https://openrouter.ai/api/v1/chat/completions` endpoint                                             |
 | Azure OpenAI / Foundry Responses                 | HTTPS resource hosts ending exactly in `.openai.azure.com` or `.services.ai.azure.com`, with `/openai/v1/responses` |
 | Azure Foundry Anthropic                          | HTTPS resource hosts ending exactly in `.services.ai.azure.com`, with `/anthropic/v1/messages`                      |
@@ -39,6 +38,9 @@ custom endpoints do not inherit this policy.
   A lifecycle that opened a block but produced no useful output remains guarded.
 - Responses requires a native completed response. An initial `response.created`
   followed by EOF cannot use the translator's synthetic stop as proof.
+- Codex is excluded from the native empty-turn exception. A completed empty
+  Responses turn remains a failure, including with positive output/reasoning
+  usage and authenticated execution; combos may fall through to a sibling.
 - Native errors take priority over normal terminals. Existing quota errors,
   missing-terminal handling, token-limit exemptions, reasoning output, and tool
   output retain their separate classification.

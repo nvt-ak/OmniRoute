@@ -170,6 +170,29 @@ test("error-only SSE message is sanitized before returning the failure", async (
   assert.ok(!res.message.includes("at run"));
 });
 
+test("native Responses failure keeps its error and usage when detected for an OpenAI caller", async () => {
+  const response = {
+    object: "response",
+    status: "failed",
+    output: [],
+    error: { code: "rate_limit_exceeded", message: "Quota exhausted" },
+    usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+  };
+  const res = await parseNonStreamingResponseBody({
+    ...baseOpts,
+    providerResponse: makeResponse(
+      `data: ${JSON.stringify({ type: "response.failed", response })}\n\n`,
+      "text/event-stream"
+    ),
+  });
+  assert.equal(res.kind, "ok");
+  if (res.kind !== "ok") return;
+  assert.equal(res.responsePayloadFormat, "openai-responses");
+  assert.equal(res.responseBody.status, "failed");
+  assert.deepEqual(res.responseBody.error, response.error);
+  assert.deepEqual(res.responseBody.usage, response.usage);
+});
+
 test("unparseable SSE with no embedded error → generic invalid_sse message", async () => {
   const sse = "data: not-json-at-all\n\n";
   const res = await parseNonStreamingResponseBody({

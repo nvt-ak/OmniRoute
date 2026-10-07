@@ -777,7 +777,7 @@ of your shell history. → [CLI Integrations](docs/guides/CLI-INTEGRATIONS.md)
   <tr><td align="left" nowrap>📲 <b>PWA</b></td><td align="left" nowrap>"Add to Home Screen"</td><td align="left">Fullscreen, offline, installable from browser</td></tr>
   <tr><td align="left" nowrap>🧩 <b>OpenCode plugin</b></td><td align="left" nowrap><code>@omniroute/opencode-provider</code></td><td align="left">Native OpenCode integration</td></tr>
   <tr><td align="left" nowrap>🤖 <b>VS Code Copilot Chat</b></td><td align="left" nowrap>install <b>OmniCopilot</b> extension</td><td align="left">Every OmniRoute model in the native Copilot Chat picker — stable &amp; Insiders</td></tr>
-  <tr><td align="left" nowrap>🛠️ <b>From source</b></td><td align="left" nowrap><code>npm install && npm run dev</code></td><td align="left">Hack on it, contribute</td></tr>
+  <tr><td align="left" nowrap>🛠️ <b>From source</b></td><td align="left" nowrap><code>ONNXRUNTIME_NODE_INSTALL=skip npm install && npm run dev</code></td><td align="left">Hack on it, contribute</td></tr>
 </table>
 
 <sub>📖 [Docker Guide](docs/guides/DOCKER_GUIDE.md) · [Desktop](electron/README.md) · [Menu-bar tray](https://github.com/zoispag/omniroute-tray) · [Termux](docs/guides/TERMUX_GUIDE.md) · [PWA](docs/guides/PWA_GUIDE.md) · [OpenCode](docs/frameworks/OPENCODE.md)</sub>
@@ -1133,9 +1133,11 @@ bun run dev
 **🛠️ From source**
 
 ```bash
-cp .env.example .env && npm install
+cp .env.example .env && ONNXRUNTIME_NODE_INSTALL=skip npm install
 PORT=20128 npm run dev
 ```
+
+`ONNXRUNTIME_NODE_INSTALL=skip` preserves the CPU-only install by skipping ONNX Runtime's optional CUDA download. Use the same variable with `npm ci` for lockfile-based installs. In PowerShell, set `$env:ONNXRUNTIME_NODE_INSTALL = "skip"` before running `npm install` or `npm ci`.
 
 **📦 pnpm**
 
