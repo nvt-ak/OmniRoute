@@ -58,7 +58,12 @@ test("212 upgrades an existing usage_history without inventing costs", () => {
      VALUES ('openai', 'gpt-4o', 1000, 500, '2024-01-01T00:00:00.000Z')`
   ).run();
 
-  // Replay against the pre-migration shape.
+  // Replay against the pre-migration shape. A DB that predates 212 also predates
+  // 214a, whose index covers provider_cost_usd, so roll 214a back first.
+  db.exec("DROP INDEX idx_uh_key_ts_limit_cost");
+  db.exec("ALTER TABLE usage_history DROP COLUMN limit_cost_usd");
+  db.exec("ALTER TABLE usage_history DROP COLUMN limit_cost_status");
+  db.prepare("DELETE FROM _omniroute_migrations WHERE version = '214a'").run();
   db.exec("ALTER TABLE usage_history DROP COLUMN provider_credits");
   db.exec("ALTER TABLE usage_history DROP COLUMN provider_cost_usd");
   db.prepare("DELETE FROM _omniroute_migrations WHERE version = '212'").run();

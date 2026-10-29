@@ -31,7 +31,7 @@ test("no two migration files share the same numeric prefix", () => {
 
   const byVersion = new Map<string, string[]>();
   for (const file of files) {
-    const m = file.match(/^(\d+)_(.+)\.sql$/);
+    const m = file.match(/^(\d+[a-z]?)_(.+)\.sql$/);
     if (!m) continue;
     const [, version, name] = m;
     if (!byVersion.has(version)) byVersion.set(version, []);
@@ -59,6 +59,6 @@ test("no two migration files share the same numeric prefix", () => {
 
 test("every migration file matches the NNN_name.sql convention", () => {
   const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql"));
-  const bad = files.filter((f) => !/^\d+_[^.]+\.sql$/.test(f));
+  const bad = files.filter((f) => !/^\d+[a-z]?_[^.]+\.sql$/.test(f));
   assert.deepEqual(bad, [], `Files violating NNN_name.sql convention: ${bad.join(", ")}`);
 });

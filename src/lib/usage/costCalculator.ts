@@ -330,11 +330,14 @@ export interface CostCalculationResult {
   failed?: boolean;
 }
 
-export async function calculateCostDetailed(
+type PricingRowResolver = (provider: string, model: string) => Promise<unknown>;
+
+async function calculateCostDetailedWith(
+  resolvePricing: PricingRowResolver,
   provider: string,
   model: string,
   tokens: CostTokenUsage | null | undefined,
-  options: CostCalculationOptions = {}
+  options: CostCalculationOptions
 ): Promise<CostCalculationResult> {
   if (!tokens || !provider || !model) return { costUsd: 0, priced: true };
 
@@ -344,14 +347,14 @@ export async function calculateCostDetailed(
   if (exactCostUsd !== null) return { costUsd: exactCostUsd, priced: true };
 
   try {
-    const pricing = await resolvePricingRow(provider, model);
+    const pricing = await resolvePricing(provider, model);
     // No pricing row anywhere — this is the #12341 case (e.g. a provider's own
     // routing alias such as "auto" that has no catalog price). Report it as
     // unpriced rather than a bare $0 so budget enforcement can fail closed.
     if (!pricing) return { costUsd: 0, priced: false };
 
     const pricingRecord =
-      pricing && typeof pricing === "object" && !Array.isArray(pricing)
+      typeof pricing === "object" && !Array.isArray(pricing)
         ? (pricing as Record<string, unknown>)
         : {};
     const costUsd = computeCostFromPricing(pricingRecord, tokens, {
@@ -364,6 +367,46 @@ export async function calculateCostDetailed(
     console.error("Error calculating cost:", error);
     return { costUsd: 0, priced: false, failed: true };
   }
+}
+
+export async function calculateCostDetailed(
+  provider: string,
+  model: string,
+  tokens: CostTokenUsage | null | undefined,
+  options: CostCalculationOptions = {}
+): Promise<CostCalculationResult> {
+  return calculateCostDetailedWith(resolvePricingRow, provider, model, tokens, options);
+}
+
+/** A `calculateCostDetailed` bound to one batch's pricing-row memo. */
+export type BatchCostCalculator = (
+  provider: string,
+  model: string,
+  tokens: CostTokenUsage | null | undefined,
+  options?: CostCalculationOptions
+) => Promise<CostCalculationResult>;
+
+/**
+ * `calculateCostDetailed` for pricing many usage rows in one pass: the pricing row
+ * for each (provider, model) is resolved once and reused. Resolving a row merges
+ * the pricing tables on every call, so per-row lookups over a week of usage
+ * (tens of thousands of groups) blocked the event loop for seconds per request.
+ * Scope one calculator to one batch — it never observes pricing edits made
+ * after its first lookup of a model.
+ */
+export function createBatchCostCalculator(): BatchCostCalculator {
+  const pricingByModel = new Map<string, Promise<unknown>>();
+  const resolveMemoized: PricingRowResolver = (provider, model) => {
+    const key = `${provider}\u0000${model}`;
+    let pricing = pricingByModel.get(key);
+    if (!pricing) {
+      pricing = resolvePricingRow(provider, model);
+      pricingByModel.set(key, pricing);
+    }
+    return pricing;
+  };
+  return (provider, model, tokens, options = {}) =>
+    calculateCostDetailedWith(resolveMemoized, provider, model, tokens, options);
 }
 
 export async function calculateCost(

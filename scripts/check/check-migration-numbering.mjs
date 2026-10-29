@@ -21,9 +21,10 @@ import { assertNoStale } from "./lib/allowlist.mjs";
 const cwd = process.cwd();
 const MIGRATIONS_DIR = path.join(cwd, "src/lib/db/migrations");
 
-// Convenção de nome: NNN_descricao.sql (prefixo numérico zero-padded de >= 3 dígitos).
+// Convenção de nome: NNN_descricao.sql (prefixo numérico zero-padded de >= 3 dígitos),
+// ou NNNx_descricao.sql para migrations exclusivas do fork (letra após o slot upstream).
 // Mesmo regex usado pelo runner de produção (migrationRunner.ts ~linha 282).
-const MIGRATION_NAME_RE = /^(\d{3,})_(.+)\.sql$/;
+const MIGRATION_NAME_RE = /^(\d{3,}[a-z]?)_(.+)\.sql$/;
 
 // ---------------------------------------------------------------------------
 // ALLOWLIST 1 — duplicatas de versão CONHECIDAS.

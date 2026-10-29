@@ -337,8 +337,9 @@ test("one tiny unknown native Anthropic model blocks both quota windows with a t
   assert.equal(status.weeklyExceeded, true);
   assert.equal(status.dailyHasUnpricedUsage, true);
   assert.equal(status.weeklyHasUnpricedUsage, true);
+  // Missing pricing needs an operator, not a timed retry: 400 on every endpoint.
   for (const [endpoint, expectedStatus] of [
-    ["/v1/chat/completions", 429],
+    ["/v1/chat/completions", 400],
     ["/v1/messages", 400],
   ] as const) {
     const response = usageLimits.buildApiKeyUsageLimitRejection(
@@ -350,8 +351,11 @@ test("one tiny unknown native Anthropic model blocks both quota windows with a t
     assert.equal(response.status, expectedStatus);
     const body = await response.json();
     assert.equal(body.error.reason, "missing_pricing");
-    assert.match(body.error.message, /pricing is missing.*daily and weekly/);
-    assert.match(body.error.message, /administrator to configure pricing/);
+    assert.match(
+      body.error.message,
+      /daily and weekly usage includes models with no configured price/
+    );
+    assert.match(body.error.message, /administrator to add pricing/);
     assert.doesNotMatch(body.error.message, /reached.*quota|Resets in|\$|0%/);
     assert.equal(body.error.reset_at, undefined);
     assert.equal(body.error.retry_after, undefined);
@@ -388,7 +392,7 @@ test("unpriced prior-day usage blocks only the enforced weekly window and cannot
     NOW
   );
   const body = await response.json();
-  assert.match(body.error.message, /pricing is missing.*weekly quota window/);
+  assert.match(body.error.message, /weekly usage includes models with no configured price/);
   assert.equal(body.error.reason, "missing_pricing");
   assert.equal(body.error.reset_at, undefined);
 
@@ -656,7 +660,7 @@ test("custom model-name mapping normalizes prefixes/case/dots, merges DB overrid
   );
 });
 
-test("custom unknown-model quota uses estimates immediately and replaces them after an operator price write", async () => {
+test("custom unknown-model quota uses estimates immediately; an operator price write applies to later requests", async () => {
   const node = await nodesDb.createProviderNode({
     id: "anthropic-compatible-quota-fallback",
     type: "anthropic-compatible",
@@ -665,31 +669,39 @@ test("custom unknown-model quota uses estimates immediately and replaces them af
   });
   assert.ok(typeof node.id === "string");
   const { created, metadata } = await makeMeteredKey();
-  await usageHistory.saveRequestUsage({
-    provider: node.id,
-    model: "unlisted-custom-model",
-    apiKeyId: created.id,
-    tokens: { input: 11, output: 1 },
-    success: true,
-    timestamp: "2026-06-19T12:00:00.000Z",
-  });
+  const saveRequest = (timestamp: string) =>
+    usageHistory.saveRequestUsage({
+      provider: node.id,
+      model: "unlisted-custom-model",
+      apiKeyId: created.id,
+      tokens: { input: 11, output: 1 },
+      success: true,
+      timestamp,
+    });
+  await saveRequest("2026-06-19T12:00:00.000Z");
   const estimated = await usageLimits.getApiKeyUsageLimitStatus(metadata, { now: () => NOW });
   assert.equal(estimated.dailySpentUsd, 0.000032);
   assert.equal(estimated.dailyExceeded, false);
   assert.equal(estimated.weeklyExceeded, false);
   assert.equal(estimated.dailyHasUnpricedUsage, false);
+
+  // Counted requests keep the cost they were first priced at; only requests made
+  // after the price write are billed at the operator price.
   await pricingDb.updatePricing({
     [node.id]: { "unlisted-custom-model": { input: 1, output: 5 } },
   });
-  const corrected = await usageLimits.getApiKeyUsageLimitStatus(metadata, { now: () => NOW });
-  assert.equal(corrected.dailySpentUsd, 0.000016);
-  await pricingDb.resetPricing(node.id);
-  const restoredEstimate = await usageLimits.getApiKeyUsageLimitStatus(metadata, {
+  await saveRequest("2026-06-19T12:01:00.000Z");
+  const afterPriceWrite = await usageLimits.getApiKeyUsageLimitStatus(metadata, {
     now: () => NOW,
   });
-  assert.equal(restoredEstimate.dailySpentUsd, 0.000032);
+  assert.equal(afterPriceWrite.dailySpentUsd, 0.000048);
+
+  await pricingDb.resetPricing(node.id);
+  await saveRequest("2026-06-19T12:02:00.000Z");
+  const afterReset = await usageLimits.getApiKeyUsageLimitStatus(metadata, { now: () => NOW });
+  assert.equal(afterReset.dailySpentUsd, 0.00008);
   const exactBoundary = await usageLimits.getApiKeyUsageLimitStatus(
-    { ...metadata, dailyUsageLimitUsd: 0.000032 },
+    { ...metadata, dailyUsageLimitUsd: 0.00008 },
     { now: () => NOW }
   );
   assert.equal(exactBoundary.dailyExceeded, true);

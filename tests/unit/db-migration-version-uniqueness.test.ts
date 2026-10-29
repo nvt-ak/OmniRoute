@@ -33,7 +33,7 @@ function migrationFiles(): Array<{ version: string; name: string }> {
     .readdirSync(MIGRATIONS_DIR)
     .filter((f) => f.endsWith(".sql"))
     .map((filename) => {
-      const m = filename.match(/^(\d+)_(.+)\.sql$/);
+      const m = filename.match(/^(\d+[a-z]?)_(.+)\.sql$/);
       return m ? { version: m[1], name: m[2] } : null;
     })
     .filter((x): x is { version: string; name: string } => x !== null);
