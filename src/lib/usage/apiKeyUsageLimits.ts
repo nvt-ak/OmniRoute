@@ -2,8 +2,7 @@ import { getDbInstance } from "@/lib/db/core";
 import type { ProviderLimitsCacheEntry } from "@/lib/db/providerLimits";
 import { getProviderQuotaWindowStartIso } from "@/lib/db/quotaResetEvents";
 import { sumSearchLedgerSpendSince } from "@/lib/db/costLedger";
-import { calculateCostDetailed } from "./costCalculator";
-
+import { createBatchCostCalculator, type BatchCostCalculator } from "./costCalculator";
 import {
   calendarWeekWindowMs,
   isValidIanaTimeZone,
@@ -77,19 +76,24 @@ export interface ApiKeyUsageLimitDeps {
   getUnpricedUsagePolicy?: () => UnpricedUsageBudgetPolicy;
 }
 
-interface UsageCostRow {
-  storedCost: number | null;
-  unmeteredRequests: number | null;
+/** A usage row in a limit window whose cost has not been cached yet (or had no price). */
+interface UnpricedLimitRow {
+  id: number;
+  timestamp: string;
   provider: string | null;
   model: string | null;
   serviceTier: string | null;
-  promptTokens: number | null;
-  pricingInputTokens: number | null;
-  completionTokens: number | null;
-  cacheReadTokens: number | null;
-  cacheCreationTokens: number | null;
-  reasoningTokens: number | null;
+  providerCostUsd: number | null;
+  tokensInput: number | null;
+  tokensOutput: number | null;
+  tokensCacheRead: number | null;
+  tokensCacheCreation: number | null;
+  tokensReasoning: number | null;
 }
+
+/** `usage_history.limit_cost_status` values (migration 214a). */
+const LIMIT_COST_PRICED = 1;
+const LIMIT_COST_UNPRICED = 2;
 
 interface WeeklyResetCandidate {
   connectionId: string;
@@ -475,7 +479,7 @@ function getCalendarWeeklyWindow(
 
 interface ApiKeyUsdSpend {
   totalUsd: number;
-  /** True when at least one (provider, model) group had no pricing row at all (#12341). */
+  /** True when at least one request in the window had no pricing row at all (#12341). */
   hasUnpricedUsage: boolean;
   /** Sorted, deduplicated `provider/model` labels of those unpriced groups. */
   unpricedModels: string[];
@@ -486,88 +490,170 @@ interface ApiKeyUsdSpend {
   hasPricingFailure: boolean;
 }
 
-async function getApiKeyUsdSpendSince(apiKeyId: string, sinceIso: string): Promise<ApiKeyUsdSpend> {
-  if (!apiKeyId)
-    return { totalUsd: 0, hasUnpricedUsage: false, unpricedModels: [], hasPricingFailure: false };
-  const db = getDbInstance();
-  const rows = db
-    .prepare(
-      `
-      SELECT
-        LOWER(provider) as provider,
-        LOWER(model) as model,
-        COALESCE(NULLIF(service_tier, ''), 'standard') as serviceTier,
-        COALESCE(tokens_input, 0) as pricingInputTokens,
-        COALESCE(SUM(provider_cost_usd), 0) as storedCost,
-        COALESCE(SUM(CASE WHEN provider_cost_usd IS NULL THEN 1 ELSE 0 END), 0) as unmeteredRequests,
-        COALESCE(SUM(CASE WHEN provider_cost_usd IS NULL THEN tokens_input ELSE 0 END), 0) as promptTokens,
-        COALESCE(SUM(CASE WHEN provider_cost_usd IS NULL THEN tokens_output ELSE 0 END), 0) as completionTokens,
-        COALESCE(SUM(CASE WHEN provider_cost_usd IS NULL THEN tokens_cache_read ELSE 0 END), 0) as cacheReadTokens,
-        COALESCE(SUM(CASE WHEN provider_cost_usd IS NULL THEN tokens_cache_creation ELSE 0 END), 0) as cacheCreationTokens,
-        COALESCE(SUM(CASE WHEN provider_cost_usd IS NULL THEN tokens_reasoning ELSE 0 END), 0) as reasoningTokens
-      FROM usage_history
-      WHERE api_key_id = @apiKeyId
+/** Rows that count toward a key's spend: successful, or billed by the provider anyway. */
+const COUNTED_USAGE_SQL = `api_key_id = @apiKeyId
         AND timestamp >= @sinceIso
-        AND (success = 1 OR provider_cost_usd IS NOT NULL)
-      GROUP BY LOWER(provider), LOWER(model), serviceTier, COALESCE(tokens_input, 0)
-    `
-    )
-    .all({ apiKeyId, sinceIso }) as UsageCostRow[];
+        AND (success = 1 OR provider_cost_usd IS NOT NULL)`;
 
-  let total = 0;
-  const unpriced = new Set<string>();
-  let hasPricingFailure = false;
-  for (const row of rows) {
-    const provider = typeof row.provider === "string" ? row.provider : "";
-    const model = typeof row.model === "string" ? row.model : "";
-    if (!provider || !model) continue;
+/**
+ * `priced`/`unpriced` outcomes are cached on the row; `failed` (the cost lookup
+ * threw) is never cached, so the row is re-tried on the next check.
+ */
+type LimitRowOutcome = "priced" | "unpriced" | "failed";
 
-    // A provider-reported exact cost is the billed amount (credit-metered providers,
-    // xAI). Those rows' tokens are excluded above, and they never make the group
-    // unpriced: only rows without a stored cost are priced from tokens.
-    total += toNumber(row.storedCost);
-    if (toNumber(row.unmeteredRequests) === 0) continue;
-
-    const { costUsd, priced, failed } = await calculateCostDetailed(
-      provider,
-      model,
-      {
-        input: toNumber(row.promptTokens),
-        output: toNumber(row.completionTokens),
-        cacheRead: toNumber(row.cacheReadTokens),
-        cacheCreation: toNumber(row.cacheCreationTokens),
-        reasoning: toNumber(row.reasoningTokens),
-      },
-      {
-        provider,
-        model,
-        serviceTier: row.serviceTier || "standard",
-        pricingInputTokens: toNumber(row.pricingInputTokens),
-      }
+async function priceLimitRow(
+  row: UnpricedLimitRow,
+  calculateCostDetailed: BatchCostCalculator
+): Promise<{ costUsd: number; outcome: LimitRowOutcome }> {
+  const provider = typeof row.provider === "string" ? row.provider : "";
+  const model = typeof row.model === "string" ? row.model : "";
+  if (!provider || !model) return { costUsd: 0, outcome: "priced" };
+  // A provider-reported exact cost is the billed amount (credit-metered providers,
+  // xAI); the row's tokens are display-only and are never priced again.
+  if (row.providerCostUsd !== null && row.providerCostUsd !== undefined) {
+    return { costUsd: toNumber(row.providerCostUsd), outcome: "priced" };
+  }
+  const tokensInput = toNumber(row.tokensInput);
+  const { costUsd, priced, failed } = await calculateCostDetailed(
+    provider,
+    model,
+    {
+      input: tokensInput,
+      output: toNumber(row.tokensOutput),
+      cacheRead: toNumber(row.tokensCacheRead),
+      cacheCreation: toNumber(row.tokensCacheCreation),
+      reasoning: toNumber(row.tokensReasoning),
+    },
+    { provider, model, serviceTier: row.serviceTier || "standard", pricingInputTokens: tokensInput }
+  );
+  if (failed) {
+    console.warn(
+      `[apiKeyUsageLimits] cost lookup failed for ${provider}/${model} — failing closed (#12341)`
     );
-    if (failed) {
-      hasPricingFailure = true;
-      console.warn(
-        `[apiKeyUsageLimits] cost lookup failed for ${provider}/${model} — failing closed (#12341)`
-      );
-    } else if (!priced) {
-      unpriced.add(`${provider}/${model}`);
-      console.warn(
-        `[apiKeyUsageLimits] no pricing found for ${provider}/${model} — usage counted as $0; ` +
-          "a configured USD quota fails closed unless the unpriced-usage policy opts out (#12341)"
-      );
+    return { costUsd: 0, outcome: "failed" };
+  }
+  if (!priced) {
+    console.warn(
+      `[apiKeyUsageLimits] no pricing found for ${provider}/${model} — usage counted as $0; ` +
+        "a configured USD quota fails closed unless the unpriced-usage policy opts out (#12341)"
+    );
+    return { costUsd: 0, outcome: "unpriced" };
+  }
+  return { costUsd, outcome: "priced" };
+}
+
+/**
+ * USD spent by one key in the daily and the weekly window.
+ *
+ * Each request is priced once and its cost cached on its usage_history row
+ * (`limit_cost_usd`, migration 214a), so a check is an indexed SUM plus pricing
+ * only the requests added since the previous check. Re-pricing the whole window
+ * on every /v1 call pinned a CPU core for keys with ~10k requests a week.
+ * A cached cost keeps the price that applied when it was first priced. Rows with
+ * no pricing row (or a failed lookup) are re-tried on every check, so adding the
+ * price reopens a window that failed closed on them.
+ */
+async function getApiKeyUsdSpend(
+  apiKeyId: string,
+  dailySinceIso: string,
+  weeklySinceIso: string
+): Promise<{ daily: ApiKeyUsdSpend; weekly: ApiKeyUsdSpend }> {
+  if (!apiKeyId) {
+    const none = () => ({
+      totalUsd: 0,
+      hasUnpricedUsage: false,
+      unpricedModels: [],
+      hasPricingFailure: false,
+    });
+    return { daily: none(), weekly: none() };
+  }
+  const db = getDbInstance();
+  const sinceIso = dailySinceIso < weeklySinceIso ? dailySinceIso : weeklySinceIso;
+  const params = { apiKeyId, sinceIso, dailySinceIso, weeklySinceIso };
+  // Both reads run back to back without yielding, so they see one consistent set
+  // of priced rows even while a concurrent check caches costs in between awaits.
+  const cached = db
+    .prepare(
+      `SELECT
+        COALESCE(SUM(CASE WHEN timestamp >= @dailySinceIso THEN limit_cost_usd END), 0) AS daily,
+        COALESCE(SUM(CASE WHEN timestamp >= @weeklySinceIso THEN limit_cost_usd END), 0) AS weekly
+      FROM usage_history
+      WHERE ${COUNTED_USAGE_SQL} AND limit_cost_status = ${LIMIT_COST_PRICED}`
+    )
+    .get(params) as { daily: number | null; weekly: number | null } | undefined;
+  const toPrice = db
+    .prepare(
+      `SELECT id, timestamp,
+        LOWER(provider) AS provider,
+        LOWER(model) AS model,
+        COALESCE(NULLIF(service_tier, ''), 'standard') AS serviceTier,
+        provider_cost_usd AS providerCostUsd,
+        tokens_input AS tokensInput,
+        tokens_output AS tokensOutput,
+        tokens_cache_read AS tokensCacheRead,
+        tokens_cache_creation AS tokensCacheCreation,
+        tokens_reasoning AS tokensReasoning
+      FROM usage_history
+      WHERE ${COUNTED_USAGE_SQL} AND limit_cost_status != ${LIMIT_COST_PRICED}`
+    )
+    .all(params) as UnpricedLimitRow[];
+
+  let dailyUsd = toNumber(cached?.daily);
+  let weeklyUsd = toNumber(cached?.weekly);
+  const dailyUnpriced = new Set<string>();
+  const weeklyUnpriced = new Set<string>();
+  let dailyFailure = false;
+  let weeklyFailure = false;
+  const calculateCostDetailed = createBatchCostCalculator();
+  const priced: Array<{ id: number; costUsd: number; status: number }> = [];
+  for (const row of toPrice) {
+    const { costUsd, outcome } = await priceLimitRow(row, calculateCostDetailed);
+    const inDaily = row.timestamp >= dailySinceIso;
+    const inWeekly = row.timestamp >= weeklySinceIso;
+    if (outcome === "failed") {
+      dailyFailure ||= inDaily;
+      weeklyFailure ||= inWeekly;
+      continue;
     }
-    total += costUsd;
+    priced.push({
+      id: row.id,
+      costUsd,
+      status: outcome === "priced" ? LIMIT_COST_PRICED : LIMIT_COST_UNPRICED,
+    });
+    if (inDaily) dailyUsd += costUsd;
+    if (inWeekly) weeklyUsd += costUsd;
+    if (outcome === "unpriced") {
+      const label = `${row.provider ?? ""}/${row.model ?? ""}`;
+      if (inDaily) dailyUnpriced.add(label);
+      if (inWeekly) weeklyUnpriced.add(label);
+    }
+  }
+
+  if (priced.length > 0) {
+    const update = db.prepare(
+      `UPDATE usage_history SET limit_cost_usd = ?, limit_cost_status = ?
+       WHERE id = ? AND limit_cost_status != ${LIMIT_COST_PRICED}`
+    );
+    db.transaction(() => {
+      for (const row of priced) update.run(row.costUsd, row.status, row.id);
+    })();
   }
 
   // Web search spend is not in usage_history; it lives in request_cost_ledger
   // under the search-only service_tier marker, so chat rows are never re-counted.
-  total += sumSearchLedgerSpendSince(apiKeyId, sinceIso);
   return {
-    totalUsd: roundUsd(total),
-    hasUnpricedUsage: unpriced.size > 0,
-    unpricedModels: [...unpriced].sort(),
-    hasPricingFailure,
+    daily: {
+      totalUsd: roundUsd(dailyUsd + sumSearchLedgerSpendSince(apiKeyId, dailySinceIso)),
+      hasUnpricedUsage: dailyUnpriced.size > 0,
+      unpricedModels: [...dailyUnpriced].sort(),
+      hasPricingFailure: dailyFailure,
+    },
+    weekly: {
+      totalUsd: roundUsd(weeklyUsd + sumSearchLedgerSpendSince(apiKeyId, weeklySinceIso)),
+      hasUnpricedUsage: weeklyUnpriced.size > 0,
+      unpricedModels: [...weeklyUnpriced].sort(),
+      hasPricingFailure: weeklyFailure,
+    },
   };
 }
 
@@ -594,10 +680,11 @@ export async function getApiKeyUsageLimitStatus(
   const weeklyLimitUsd = normalizeLimitUsd(metadata.weeklyUsageLimitUsd);
   const enabled = metadata.usageLimitEnabled === true;
 
-  const [dailySpend, weeklySpend] = await Promise.all([
-    getApiKeyUsdSpendSince(metadata.id, dailyWindowStartIso),
-    getApiKeyUsdSpendSince(metadata.id, weeklyWindowStartIso),
-  ]);
+  const { daily: dailySpend, weekly: weeklySpend } = await getApiKeyUsdSpend(
+    metadata.id,
+    dailyWindowStartIso,
+    weeklyWindowStartIso
+  );
   const dailySpentUsd = dailySpend.totalUsd;
   const weeklySpentUsd = weeklySpend.totalUsd;
 
@@ -822,7 +909,10 @@ export function buildApiKeyUsageLimitRejection(
   const message = sanitizeErrorMessage(
     unpricedMessage ?? buildUsageLimitExceededMessage(status, now, options)
   );
-  const hasUnpricedUsage = unpricedMessage !== null;
+  // A block caused by unpriced models is tagged `missing_pricing`; a failed
+  // lookup is transient and keeps its own message without the tag.
+  const hasUnpricedUsage =
+    unpricedMessage !== null && !status.dailyPricingFailure && !status.weeklyPricingFailure;
   // A reset is only actionable if that single priced window caused the
   // rejection. Another blocked window (or missing pricing) may outlive it.
   const trippedResetAtIso =
@@ -859,7 +949,11 @@ export function buildApiKeyUsageLimitRejection(
   // Missing pricing or a failed lookup needs an administrator or a recovered
   // pricing store, not a timed quota reset. Do not trigger automatic 429 retries.
   if (unpricedMessage) {
-    return new Response(JSON.stringify(buildErrorBody(400, message)), {
+    const errorBody = buildErrorBody(400, message);
+    const body = hasUnpricedUsage
+      ? { ...errorBody, error: { ...errorBody.error, reason: "missing_pricing" } }
+      : errorBody;
+    return new Response(JSON.stringify(body), {
       status: 400,
       headers: { "Content-Type": "application/json" },
     });
@@ -868,7 +962,6 @@ export function buildApiKeyUsageLimitRejection(
   // Priced quota overages retain the current 429 + reset timing contract.
   return errorResponse(429, message, {
     code: "usage_limit_exceeded",
-    reason: hasUnpricedUsage ? "missing_pricing" : undefined,
     retryAfter: trippedResetAtIso,
   });
 }

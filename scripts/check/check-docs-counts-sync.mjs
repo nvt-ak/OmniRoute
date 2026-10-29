@@ -129,11 +129,13 @@ export function readProviderTotal() {
   return parseProviderTotal(fs.readFileSync(abs, "utf8"));
 }
 
-// STRICT: number of SQL migration files shipped with the app.
+// STRICT: number of upstream SQL migration files shipped with the app. Fork-only
+// migrations (`214a_…`, letter after the slot) are left out so the documented count
+// stays the upstream one and never conflicts on rebase.
 export function countMigrations() {
   const abs = path.join(ROOT, "src", "lib", "db", "migrations");
   if (!fs.existsSync(abs)) return 0;
-  return fs.readdirSync(abs).filter((f) => f.endsWith(".sql")).length;
+  return fs.readdirSync(abs).filter((f) => /^\d+_.+\.sql$/.test(f)).length;
 }
 
 // STRICT: canonical i18n locale count, read from the shared config.

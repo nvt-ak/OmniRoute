@@ -227,7 +227,9 @@ function getMigrationFiles(): Array<{ version: string; name: string; path: strin
     .filter((f) => f.endsWith(".sql"))
     .sort()
     .map((filename) => {
-      const match = filename.match(/^(\d+)_(.+)\.sql$/);
+      // A trailing letter (`214a_`) marks a fork-only migration: it sorts right after
+      // its upstream slot and never takes a number upstream will use next.
+      const match = filename.match(/^(\d+[a-z]?)_(.+)\.sql$/);
       if (!match) return null;
       return {
         version: match[1],

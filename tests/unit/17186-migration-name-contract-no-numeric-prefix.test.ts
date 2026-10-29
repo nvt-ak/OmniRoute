@@ -29,8 +29,9 @@ const MIGRATIONS_DIR = path.resolve(
   "../../src/lib/db/migrations"
 );
 
-// Same regex as src/lib/db/migrationRunner.ts (loadMigrationsFromDir).
-const MIGRATION_FILENAME_RE = /^(\d+)_(.+)\.sql$/;
+// Same regex as src/lib/db/migrationRunner.ts (loadMigrationsFromDir); a trailing
+// letter marks a fork-only migration (`214a_`).
+const MIGRATION_FILENAME_RE = /^(\d+[a-z]?)_(.+)\.sql$/;
 
 test("#17186: migration record names never carry the numeric prefix", () => {
   const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql"));
