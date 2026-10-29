@@ -257,6 +257,8 @@ type TranslateState = ReturnType<typeof initState> & {
   suppressThinkClose?: boolean;
   /** Client's explicit thinking intent — see StreamOptions.requestedThinking. */
   requestedThinking?: boolean;
+  /** Drop Responses commentary-phase text from synthesized snapshots. */
+  dropResponsesCommentary?: boolean;
   /** Accumulated message content for call log response body */
   accumulatedContent?: string;
   /** Accumulated reasoning content (separate from content) */
