@@ -437,22 +437,9 @@ async function buildUnifiedModelsResponseCore(
     const nodeIdToProviderType: Record<string, string> = {};
     const nodeApiTypes = indexNodeApiTypes(providerNodes);
     for (const node of providerNodes) {
-<<<<<<< HEAD
       const resolvedPrefix = resolveProviderNodePrefix(
         node as { prefix?: unknown; name?: unknown } | null
       );
-=======
-      // #9416: nodes without an explicit prefix retain the public name slug used
-      // by the release catalog instead of exposing their internal UUID.
-      const resolvedPrefix =
-        node.prefix?.trim() ||
-        node.name
-          ?.trim()
-          ?.toLowerCase()
-          ?.replace(/\s+/g, "-")
-          ?.replace(/[^a-z0-9-]/g, "") ||
-        null;
->>>>>>> 881ad51d94 (fix(model-specs): merge duplicate claude-sonnet-5-5 spec after rebase (keep between_tools))
       if (resolvedPrefix) {
         providerIdToPrefix[node.id] = resolvedPrefix;
       }
