@@ -36,7 +36,8 @@ The deployment user must have all of the following available in a non-interactiv
 - Write access to `~/.omniroute/`, including the deployment storage described below.
 - Enough free disk space for five release tarballs plus one last-known-good copy.
 - Port `20128` available to OmniRoute. The workflow starts
-  `omniroute serve --daemon --port 20128` and checks
+  `omniroute serve --daemon --port 20128` bound to `127.0.0.1` (loopback only — see
+  [Network exposure and persistent bind](#network-exposure-and-persistent-bind)) and checks
   `http://127.0.0.1:20128/api/monitoring/health`.
 
 Install Node.js 24 with npm system-wide through an operator-approved Ubuntu package source
@@ -117,6 +118,8 @@ On the server, the deployment user can inspect the daemon without exposing secre
 ```bash
 cat "${DATA_DIR:-$HOME/.omniroute}/server/.pid"
 curl -fsS http://127.0.0.1:20128/api/monitoring/health
+# Verify the daemon binds loopback only (should show 127.0.0.1:20128, NOT 0.0.0.0:20128):
+ss -ltnp | grep 20128
 tail -n 80 "${DATA_DIR:-$HOME/.omniroute}/logs/application/app.log"
 omniroute --version
 ```
@@ -126,3 +129,50 @@ Otherwise deployment can look in a different PID directory from the daemon that 
 running. Keep the server's OmniRoute environment in `~/.omniroute/.env`, which the CLI loads on
 startup, and export `DATA_DIR` through the deployment user's SSH environment when it points
 somewhere else.
+
+## Network exposure and persistent bind
+
+The workflow exports `OMNIROUTE_SERVER_HOST="127.0.0.1"` before starting the daemon, so the
+Next.js standalone server binds to the loopback interface only. Port 20128 is not reachable from
+outside the server.
+
+The workflow also writes or replaces `OMNIROUTE_SERVER_HOST=127.0.0.1` in
+`${DATA_DIR:-$HOME/.omniroute}/.env` before starting the daemon. This ensures the loopback bind
+survives restarts done outside the workflow (`omniroute restart`, `omniroute serve --daemon`,
+autostart, or systemd), because the CLI loads that file on every boot and the key is read before
+`resolveServerHost()` falls back to `0.0.0.0`.
+
+The `.env` write is idempotent: it replaces the key when already present (including
+`OMNIROUTE_SERVER_HOST=0.0.0.0`) and appends it when absent, without touching other keys or the
+file mode of an existing file. Only if the file does not exist is it created with mode 600.
+
+To override (for example, to bind a specific private interface), set `OMNIROUTE_SERVER_HOST` in
+the deployment user's non-interactive SSH environment before the next deploy; the workflow
+default `${OMNIROUTE_SERVER_HOST:-127.0.0.1}` yields to an existing process-env value, and the
+`.env` write uses that resolved value.
+
+> **Already-running daemon**: A daemon started before this change was deployed still binds its
+> original address. The loopback restriction and persistent `.env` entry take effect only after
+> the next successful deploy (which restarts the daemon). A firewall rule
+> (`iptables -A INPUT ! -i lo -p tcp --dport 20128 -j DROP` or `ufw deny 20128`) provides
+> defense in depth in the interim and is the operator's responsibility.
+
+## Dashboard access
+
+Because the daemon binds loopback, the dashboard and API are not directly reachable from a
+browser on another machine. Use an SSH tunnel to forward the port:
+
+```bash
+ssh -N -L 20128:127.0.0.1:20128 <VPS_USER>@<VPS_HOST>
+```
+
+Then open `http://localhost:20128` in a local browser. The tunnel must remain open while you use
+the dashboard. Alternatively, the operator can configure a TLS-terminated reverse proxy
+(for example nginx or Caddy) that listens on a public port with authentication and forwards to
+`127.0.0.1:20128`.
+
+When using nginx with `proxy_pass http://localhost:20128`, note that `localhost` may resolve to
+`::1` (IPv6 loopback) before `127.0.0.1` on some Linux systems. Since the daemon binds only
+`127.0.0.1` (IPv4), nginx will fail on the `::1` attempt and, if configured with `resolver` or
+multiple upstream addresses, try the next address. To avoid the extra round-trip or a connect
+error, use `proxy_pass http://127.0.0.1:20128` explicitly.

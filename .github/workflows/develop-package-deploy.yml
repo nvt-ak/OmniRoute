@@ -228,6 +228,21 @@ jobs:
           STOP_DAEMON
           }
           export APP_PORT="$app_port"
+          export OMNIROUTE_SERVER_HOST="${OMNIROUTE_SERVER_HOST:-127.0.0.1}"
+          # Persist OMNIROUTE_SERVER_HOST into the daemon's env file so restarts done
+          # outside the workflow (omniroute restart, autostart, systemd) also bind loopback.
+          _env_file="${DATA_DIR:-$HOME/.omniroute}/.env"
+          if [ -f "$_env_file" ]; then
+            if grep -qF "OMNIROUTE_SERVER_HOST=" "$_env_file"; then
+              perl -i -pe "s|^OMNIROUTE_SERVER_HOST=.*|OMNIROUTE_SERVER_HOST=${OMNIROUTE_SERVER_HOST}|" "$_env_file"
+            else
+              printf '\nOMNIROUTE_SERVER_HOST=%s\n' "${OMNIROUTE_SERVER_HOST}" >> "$_env_file"
+            fi
+          else
+            printf 'OMNIROUTE_SERVER_HOST=%s\n' "${OMNIROUTE_SERVER_HOST}" > "$_env_file"
+            chmod 600 "$_env_file"
+          fi
+          unset _env_file
 
           health_check() {
             local body attempt
