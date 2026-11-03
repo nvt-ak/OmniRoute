@@ -89,6 +89,31 @@ test("runFabricatedDocsCheck: index contains real OmniRoute routes", () => {
   assert.ok(result.index.envVars.has("PORT"));
 });
 
+test("runFabricatedDocsCheck: GitHub Actions vars and secrets are documented config", () => {
+  const findings = findingsFor({
+    docs: {
+      "deploy.md": "Configure `DEPLOY_HOST` and `DEPLOY_SSH_KEY`.\n",
+    },
+    files: {
+      ".github/workflows/deploy.yml": `
+name: deploy
+on: workflow_dispatch
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_HOST: \${{ vars.DEPLOY_HOST || 'localhost' }}
+      DEPLOY_SSH_KEY: \${{ secrets.DEPLOY_SSH_KEY }}
+    steps:
+      - run: echo configured
+`,
+    },
+  });
+
+  assert.equal(findings.has("env-var::DEPLOY_HOST"), false);
+  assert.equal(findings.has("env-var::DEPLOY_SSH_KEY"), false);
+});
+
 test("formatHumanReport: no-drift case produces a checkmark", () => {
   const result = {
     totalFindings: 0,
