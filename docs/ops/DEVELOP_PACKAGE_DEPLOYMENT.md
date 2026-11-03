@@ -7,7 +7,7 @@ lastUpdated: 2026-11-03
 # Develop package deployment
 
 `develop-package-deploy.yml` builds the npm package after every push to `develop`, transfers the
-exact tarball to one Ubuntu server, reinstalls it for a dedicated non-root user, and restarts the
+exact tarball to one Ubuntu server, installs or updates it for the deployment user, and restarts the
 CLI daemon. The workflow never publishes to npm, creates a GitHub Release, or uses Docker.
 
 ## GitHub configuration
@@ -31,13 +31,24 @@ SSH port, the host field normally has the form `[host]:port`.
 
 The deployment user must have all of the following available in a non-interactive SSH session:
 
-- Node.js 24, `npm`, `omniroute`, `curl`, `tar`, and Bash.
+- Node.js 24 with `npm`, plus `curl`, `tar`, and Bash. No existing OmniRoute installation is required.
 - A user-owned npm global prefix. `npm install -g` must succeed without `sudo`.
 - Write access to `~/.omniroute/`, including the deployment storage described below.
 - Enough free disk space for five release tarballs plus one last-known-good copy.
 - Port `20128` available to OmniRoute. The workflow starts
   `omniroute serve --daemon --port 20128` and checks
   `http://127.0.0.1:20128/api/monitoring/health`.
+
+Install Node.js 24 with npm system-wide through an operator-approved Ubuntu package source
+before deployment. The prerequisite check reports every missing command and rejects other Node
+major versions. It does not install operating-system packages. Do not install the public npm
+package `omniroute` first: that is the upstream package, not this fork. The workflow installs
+this fork's built tarball directly.
+
+Running as root works with a writable global npm prefix, but deviates from the recommended
+dedicated non-root user. The workflow resolves `npm prefix -g`, adds its `bin` directory to PATH,
+and uses that exact OmniRoute executable after installation. It creates missing data/release
+directories. Node and npm themselves must already be on the non-interactive SSH PATH.
 
 The GitHub-hosted build mirrors the existing fork artifact build: Node 24, Webpack,
 `NODE_OPTIONS=--max-old-space-size=8192`, docs skipped, and the MITM native component stubbed.
@@ -61,7 +72,12 @@ The implementation is in `bin/cli/commands/serve.mjs` and `bin/cli/utils/pid.mjs
   is missing or stale, it falls back to stopping the process listening on the supplied port.
 - `omniroute restart --port 20128` is the matching CLI shortcut: stop, wait, then start detached.
   The workflow performs those phases separately because the package must be installed between
-  stop and start.
+  stop and start. It deliberately does not invoke CLI stop: that command can kill a foreign
+  listener through its port fallback. Instead it checks the recorded daemon PID's Linux `/proc`
+  working directory against this global package's `dist` or `app` directory and verifies its
+  Node executable before sending SIGTERM. A live supervisor, unrecognized PID, shutdown timeout,
+  or occupied port aborts installation without killing other services. Missing/stale PID files
+  are safe when the port is free. A daemon without a valid PID file needs manual recovery.
 - `omniroute status` reports package, data-directory, database, and tool information; it is not
   a daemon liveness check. The deployment therefore gates success on the HTTP health endpoint.
 
@@ -89,8 +105,9 @@ or become healthy, the workflow reinstalls `last-known-good.tgz`, restarts the d
 health again, and still marks the GitHub deployment as failed so the regression remains visible.
 
 The first automated deployment has no last-known-good tarball yet. If that first deployment
-fails after stopping the existing daemon, automatic rollback is unavailable and an operator
-must reinstall the previous package manually. After one successful run, later runs have the
+fails, the workflow explicitly reports that rollback is unavailable; it does not claim to restore
+a previous package. An operator must diagnose/retry the first install (or restore an existing
+package manually). After one successful run, later runs have the
 automatic rollback path.
 
 ## Operational checks
@@ -105,7 +122,7 @@ omniroute --version
 ```
 
 If `DATA_DIR` is configured, the same value must be present in non-interactive SSH sessions.
-Otherwise `omniroute stop` can look in a different PID directory from the daemon that is already
+Otherwise deployment can look in a different PID directory from the daemon that is already
 running. Keep the server's OmniRoute environment in `~/.omniroute/.env`, which the CLI loads on
 startup, and export `DATA_DIR` through the deployment user's SSH environment when it points
 somewhere else.

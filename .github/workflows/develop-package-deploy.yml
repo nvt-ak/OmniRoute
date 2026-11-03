@@ -121,7 +121,7 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_PATH" \
             "$VPS_USER@$VPS_HOST" \
-            'command -v node >/dev/null && command -v npm >/dev/null && command -v omniroute >/dev/null && command -v curl >/dev/null && command -v tar >/dev/null'
+            'missing=""; for tool in node npm curl tar; do command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"; done; if [ -n "$missing" ]; then printf "Missing prerequisites:%s\nInstall Node.js 24 with npm system-wide using your approved Ubuntu package source; ensure node, npm, curl and tar are on the non-interactive SSH PATH. OmniRoute is installed from the workflow tarball, not npm registry.\n" "$missing" >&2; exit 1; fi; node -e '\''if (process.versions.node.split(".")[0] !== "24") { console.error("Node.js 24 is required; install it with npm using your approved Ubuntu package source."); process.exit(1); }'\'''
 
       - name: Upload package to server
         env:
@@ -175,6 +175,59 @@ jobs:
           current_tgz="$releases_dir/omniroute-$deploy_sha.tgz"
           last_known_good="$deploy_root/last-known-good.tgz"
           app_log="${DATA_DIR:-$HOME/.omniroute}/logs/application/app.log"
+          export DATA_DIR="${DATA_DIR:-$HOME/.omniroute}"
+          npm_prefix=$(npm prefix -g)
+          export PATH="$npm_prefix/bin:$PATH"
+          export OMNIROUTE_DEPLOY_PACKAGE_ROOT="$(npm root -g)/omniroute"
+          mkdir -p "$releases_dir" "$DATA_DIR"
+
+          stop_daemon() {
+            # Never use the CLI's port-kill fallback on a shared server.
+            node --input-type=module <<'STOP_DAEMON'
+          import fs from "node:fs";
+          import path from "node:path";
+          import net from "node:net";
+          const data = process.env.DATA_DIR;
+          const root = process.env.OMNIROUTE_DEPLOY_PACKAGE_ROOT;
+          const live = (pid) => {
+            try { process.kill(pid, 0); return true; }
+            catch (error) { if (error.code === "ESRCH") return false; throw error; }
+          };
+          const readPid = (name) => {
+            try {
+              const value = fs.readFileSync(path.join(data, name, ".pid"), "utf8").trim();
+              if (!/^[1-9][0-9]*$/.test(value) || Number(value) <= 1) throw new Error("Invalid daemon PID");
+              return Number(value);
+            } catch (error) { if (error.code === "ENOENT") return null; throw error; }
+          };
+          const supervisor = readPid("supervisor");
+          if (supervisor && live(supervisor)) throw new Error("A supervisor is running; manual migration to the standalone daemon is required.");
+          const pid = readPid("server");
+          if (pid && live(pid)) {
+            const cwd = fs.realpathSync(`/proc/${pid}/cwd`);
+            const expected = fs.realpathSync(root);
+            const executable = fs.realpathSync(`/proc/${pid}/exe`);
+            if (executable !== fs.realpathSync(process.execPath) || !["dist", "app"].some(dir => cwd === path.join(expected, dir))) {
+              throw new Error("PID does not identify this OmniRoute daemon; refusing to stop it.");
+            }
+            process.kill(pid, "SIGTERM");
+            for (let attempt = 0; attempt < 100 && live(pid); attempt++) await new Promise(resolve => setTimeout(resolve, 100));
+            if (live(pid)) throw new Error("OmniRoute did not stop; refusing to replace its package.");
+          } else {
+            console.log("No running OmniRoute daemon; proceeding with installation.");
+          }
+          // A foreign listener must never be killed or mistaken for our healthy deployment.
+          const port = Number(process.env.APP_PORT);
+          for (const host of ["0.0.0.0", "::"]) {
+            await new Promise((resolve, reject) => {
+              const server = net.createServer();
+              server.once("error", error => error.code === "EAFNOSUPPORT" ? resolve() : reject(error));
+              server.listen({port, host}, () => server.close(resolve));
+            });
+          }
+          STOP_DAEMON
+          }
+          export APP_PORT="$app_port"
 
           health_check() {
             local body attempt
@@ -204,14 +257,14 @@ jobs:
           install_and_start() {
             local package_path=$1
             echo "Stopping the existing daemon on port $app_port."
-            omniroute stop --port "$app_port" || return 1
+            stop_daemon || return 1
 
             echo "Installing $package_path."
             npm install -g "$package_path" --no-audit --no-fund || return 1
             hash -r
 
             echo "Starting OmniRoute as a detached CLI daemon."
-            omniroute serve --daemon --port "$app_port" || return 1
+            "$npm_prefix/bin/omniroute" serve --daemon --port "$app_port" || return 1
             health_check || return 1
           }
 
