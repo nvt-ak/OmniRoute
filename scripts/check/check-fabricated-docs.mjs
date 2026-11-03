@@ -555,6 +555,31 @@ export function buildCodebaseIndex(root = ROOT) {
   // real env vars and must not be flagged as fabricated.
   walkForEnv("tests");
 
+  // GitHub Actions repository variables and secrets are real operator-facing
+  // configuration even though application code never reads them through process.env.
+  // Index the exact `${{ vars.NAME }}` / `${{ secrets.NAME }}` references so an ops
+  // guide can document a workflow contract without weakening the general env-var gate.
+  function walkForWorkflowConfig(dir) {
+    const abs = path.join(root, dir);
+    if (!fs.existsSync(abs)) return;
+    for (const name of fs.readdirSync(abs)) {
+      const child = path.join(abs, name);
+      const s = fs.statSync(child);
+      if (s.isDirectory()) walkForWorkflowConfig(path.relative(root, child));
+      else if (/\.ya?ml$/.test(name)) {
+        try {
+          const content = fs.readFileSync(child, "utf8");
+          for (const m of content.matchAll(/\b(?:vars|secrets)\.([A-Z][A-Z0-9_]+)\b/g)) {
+            envVars.add(m[1]);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+  walkForWorkflowConfig(".github/workflows");
+
   // Env contract maintained by the sibling gate (check-env-doc-sync.mjs): a var
   // listed in .env.example or docs/reference/ENVIRONMENT.md is, by definition, a
   // documented OmniRoute env var (including external-CLI / docker / electron vars

@@ -1,0 +1,261 @@
+name: Build and deploy develop package
+
+on:
+  push:
+    branches: [develop]
+
+concurrency:
+  group: develop-package-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+  APP_PORT: "20128"
+  RELEASE_KEEP_COUNT: "5"
+
+jobs:
+  build:
+    name: Build npm tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout develop commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund --legacy-peer-deps --prefer-offline
+
+      - name: Build release package
+        env:
+          NODE_OPTIONS: "--max-old-space-size=8192"
+          OMNIROUTE_MITM_STUB: "1"
+          OMNIROUTE_SKIP_DOCS: "1"
+          OMNIROUTE_USE_TURBOPACK: "0"
+        run: |
+          set -euo pipefail
+          npm run build:release
+          package_file=$(npm pack --silent)
+          mv "$package_file" omniroute.tgz
+
+          packed_sha=$(tar xzO -f omniroute.tgz package/dist/BUILD_SHA)
+          case "$GITHUB_SHA" in
+            "$packed_sha"*) ;;
+            *)
+              echo "::error::Tarball BUILD_SHA ($packed_sha) does not match $GITHUB_SHA"
+              exit 1
+              ;;
+          esac
+          printf 'Built omniroute.tgz from %s (%s)\n' "$GITHUB_SHA" "$(du -h omniroute.tgz | cut -f1)"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: omniroute-develop-${{ github.sha }}
+          path: omniroute.tgz
+          if-no-files-found: error
+          retention-days: 3
+
+  deploy:
+    name: Reinstall package on Ubuntu server
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VPS_HOST: ${{ vars.VPS_HOST }}
+      VPS_PORT: ${{ vars.VPS_PORT || '22' }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+      VPS_USER: ${{ vars.VPS_USER }}
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: omniroute-develop-${{ github.sha }}
+          path: deploy-artifact
+
+      - name: Configure verified SSH connection
+        env:
+          SSH_KEY_PATH: ${{ runner.temp }}/omniroute-deploy-key
+          SSH_KNOWN_HOSTS_PATH: ${{ runner.temp }}/omniroute-known-hosts
+        run: |
+          set -euo pipefail
+          for required in VPS_HOST VPS_USER VPS_SSH_KEY VPS_SSH_KNOWN_HOSTS; do
+            if [ -z "${!required:-}" ]; then
+              echo "::error::Missing required GitHub secret/variable: $required"
+              exit 1
+            fi
+          done
+          case "$VPS_PORT" in
+            ""|*[!0-9]*)
+              echo "::error::VPS_PORT must be a numeric SSH port"
+              exit 1
+              ;;
+          esac
+          if [ "$VPS_PORT" -lt 1 ] || [ "$VPS_PORT" -gt 65535 ]; then
+            echo "::error::VPS_PORT must be between 1 and 65535"
+            exit 1
+          fi
+
+          install -m 600 /dev/null "$SSH_KEY_PATH"
+          printf '%s\n' "$VPS_SSH_KEY" | tr -d '\r' > "$SSH_KEY_PATH"
+          install -m 600 /dev/null "$SSH_KNOWN_HOSTS_PATH"
+          printf '%s\n' "$VPS_SSH_KNOWN_HOSTS" | tr -d '\r' > "$SSH_KNOWN_HOSTS_PATH"
+
+          ssh \
+            -i "$SSH_KEY_PATH" \
+            -p "$VPS_PORT" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_PATH" \
+            "$VPS_USER@$VPS_HOST" \
+            'command -v node >/dev/null && command -v npm >/dev/null && command -v omniroute >/dev/null && command -v curl >/dev/null && command -v tar >/dev/null'
+
+      - name: Upload package to server
+        env:
+          SSH_KEY_PATH: ${{ runner.temp }}/omniroute-deploy-key
+          SSH_KNOWN_HOSTS_PATH: ${{ runner.temp }}/omniroute-known-hosts
+        run: |
+          set -euo pipefail
+          ssh \
+            -i "$SSH_KEY_PATH" \
+            -p "$VPS_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_PATH" \
+            "$VPS_USER@$VPS_HOST" \
+            'mkdir -p "$HOME/.omniroute/deploy/incoming" "$HOME/.omniroute/deploy/releases"'
+
+          scp \
+            -i "$SSH_KEY_PATH" \
+            -P "$VPS_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_PATH" \
+            deploy-artifact/omniroute.tgz \
+            "$VPS_USER@$VPS_HOST:.omniroute/deploy/incoming/omniroute-$GITHUB_SHA.tgz"
+
+      - name: Install, restart, health-check, and roll back on failure
+        env:
+          SSH_KEY_PATH: ${{ runner.temp }}/omniroute-deploy-key
+          SSH_KNOWN_HOSTS_PATH: ${{ runner.temp }}/omniroute-known-hosts
+        run: |
+          set -euo pipefail
+          ssh \
+            -i "$SSH_KEY_PATH" \
+            -p "$VPS_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$SSH_KNOWN_HOSTS_PATH" \
+            "$VPS_USER@$VPS_HOST" \
+            "bash -se -- '$GITHUB_SHA' '$APP_PORT' '$RELEASE_KEEP_COUNT'" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          deploy_sha=$1
+          app_port=$2
+          keep_count=$3
+          deploy_root="$HOME/.omniroute/deploy"
+          incoming_tgz="$deploy_root/incoming/omniroute-$deploy_sha.tgz"
+          releases_dir="$deploy_root/releases"
+          current_tgz="$releases_dir/omniroute-$deploy_sha.tgz"
+          last_known_good="$deploy_root/last-known-good.tgz"
+          app_log="${DATA_DIR:-$HOME/.omniroute}/logs/application/app.log"
+
+          health_check() {
+            local body attempt
+            for attempt in $(seq 1 36); do
+              body=$(curl -sf -m 5 "http://127.0.0.1:$app_port/api/monitoring/health" 2>/dev/null || true)
+              if printf '%s' "$body" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"healthy"'; then
+                echo "Health check passed on attempt $attempt."
+                return 0
+              fi
+              echo "Health check attempt $attempt/36 did not report healthy."
+              sleep 5
+            done
+            return 1
+          }
+
+          prune_releases() {
+            local index
+            mapfile -d '' -t release_files < <(
+              find "$releases_dir" -maxdepth 1 -type f -name 'omniroute-*.tgz' \
+                -printf '%T@:%p\0' | sort -z -nr | cut -z -d: -f2-
+            )
+            for ((index = keep_count; index < ${#release_files[@]}; index += 1)); do
+              rm -f -- "${release_files[$index]}"
+            done
+          }
+
+          install_and_start() {
+            local package_path=$1
+            echo "Stopping the existing daemon on port $app_port."
+            omniroute stop --port "$app_port" || return 1
+
+            echo "Installing $package_path."
+            npm install -g "$package_path" --no-audit --no-fund || return 1
+            hash -r
+
+            echo "Starting OmniRoute as a detached CLI daemon."
+            omniroute serve --daemon --port "$app_port" || return 1
+            health_check || return 1
+          }
+
+          if [ ! -f "$incoming_tgz" ]; then
+            echo "Missing uploaded package: $incoming_tgz" >&2
+            exit 1
+          fi
+          mv "$incoming_tgz" "$current_tgz"
+
+          packed_sha=$(tar xzO -f "$current_tgz" package/dist/BUILD_SHA 2>/dev/null || true)
+          case "$deploy_sha" in
+            "$packed_sha"*) ;;
+            *)
+              echo "Package BUILD_SHA [$packed_sha] does not match deploy SHA [$deploy_sha]." >&2
+              exit 1
+              ;;
+          esac
+
+          if install_and_start "$current_tgz"; then
+            cp -f "$current_tgz" "$last_known_good.tmp"
+            mv -f "$last_known_good.tmp" "$last_known_good"
+            prune_releases
+
+            echo "Deployment succeeded: $(omniroute --version) from $packed_sha."
+            exit 0
+          fi
+
+          echo "New deployment failed its health gate." >&2
+          if [ ! -f "$last_known_good" ]; then
+            echo "No last-known-good package exists yet; automatic rollback is unavailable." >&2
+            prune_releases
+            [ -f "$app_log" ] && tail -n 80 "$app_log" >&2 || true
+            exit 1
+          fi
+
+          echo "Rolling back to the last-known-good package." >&2
+          if install_and_start "$last_known_good"; then
+            prune_releases
+            echo "Rollback succeeded; the new deployment remains failed." >&2
+            exit 1
+          fi
+
+          echo "Rollback also failed. Manual recovery is required." >&2
+          prune_releases
+          [ -f "$app_log" ] && tail -n 80 "$app_log" >&2 || true
+          exit 1
+          REMOTE_SCRIPT
