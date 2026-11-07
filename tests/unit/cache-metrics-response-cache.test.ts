@@ -113,6 +113,36 @@ test("env unset: GET /api/cache reads history live and sets no cache header", as
   assert.equal(optedIn.headers.get("x-analytics-cache"), "miss");
 });
 
+test("GET returns filtered Cache Rate in live, cache miss and cache hit responses", async () => {
+  const db = core.getDbInstance();
+  insertUsageRow(db);
+  db.prepare(
+    "INSERT INTO usage_history (provider, tokens_input, tokens_cache_read, tokens_cache_creation, timestamp) VALUES (?, ?, ?, ?, ?)"
+  ).run("deepseek-web", 100, 50, 0, new Date().toISOString());
+
+  delete process.env.OMNIROUTE_CACHE_METRICS_MIN_COMPUTE_MS;
+  const live = await route.GET(localRequest("http://localhost/api/cache"));
+  assert.equal(live.status, 200);
+  const liveBody = await live.json();
+  assert.equal(liveBody.promptCache.totalRequests, 2);
+  assert.equal(liveBody.promptCache.requestsWithCacheControl, 2);
+  assert.deepEqual(liveBody.promptCache.cacheRate, {
+    totalRequests: 1,
+    requestsWithCacheControl: 1,
+  });
+
+  process.env.OMNIROUTE_CACHE_METRICS_MIN_COMPUTE_MS = "0";
+  for (const expected of ["miss", "hit"]) {
+    const response = await route.GET(localRequest("http://localhost/api/cache"));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-analytics-cache"), expected);
+    const body = await response.json();
+    assert.deepEqual(body.promptCache.cacheRate, liveBody.promptCache.cacheRate);
+    assert.equal(body.promptCache.totalRequests, 2);
+    assert.equal(body.promptCache.requestsWithCacheControl, 2);
+  }
+});
+
 test("per-call options win over the shared threshold", async () => {
   process.env.OMNIROUTE_CACHE_METRICS_MIN_COMPUTE_MS = "60000";
   assert.equal(cache.getCacheMetricsMinComputeMs(), 60_000);
