@@ -77,7 +77,7 @@ test("F1: cache route GET batches its four async reads (#11396)", () => {
   assert.ok(body, "expected an `await Promise.all([...])` batch in the cache route");
 
   assert.match(body, /getIdempotencyStats\(\)/);
-  assert.match(body, /getCacheMetrics\(\)/);
+  assert.match(body, /getCacheMetrics\([^)]*\)/);
   assert.match(body, /getCacheTrend\(trendHours\)/);
   // settings-load failure must degrade to {} *inside* the batch, not reject
   // the whole Promise.all and 500 the stats endpoint

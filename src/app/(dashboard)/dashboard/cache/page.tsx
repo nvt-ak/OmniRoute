@@ -51,6 +51,10 @@ interface PromptCacheMetrics {
   estimatedCostSaved: number;
   byProvider: Record<string, PromptCacheProviderStats>;
   byStrategy: Record<string, PromptCacheProviderStats>;
+  cacheRate?: {
+    totalRequests: number;
+    requestsWithCacheControl: number;
+  };
   lastUpdated: string;
 }
 
@@ -386,8 +390,10 @@ export default function CachePage() {
 
   const semanticHitRate = sc ? parseFloat(sc.hitRate) : 0;
   const semanticTotalRequests = sc ? sc.hits + sc.misses : 0;
-  const promptCacheRate =
-    pc && pc.totalRequests > 0 ? (pc.requestsWithCacheControl / pc.totalRequests) * 100 : 0;
+  // Cache Rate card only: exclude deepseek-web from both counts.
+  const cacheRateTotal = pc?.cacheRate?.totalRequests ?? 0;
+  const cacheRateCached = pc?.cacheRate?.requestsWithCacheControl ?? 0;
+  const promptCacheRate = cacheRateTotal > 0 ? (cacheRateCached / cacheRateTotal) * 100 : 0;
   const promptReuseRatio =
     pc && pc.totalInputTokens > 0 ? (pc.totalCachedTokens / pc.totalInputTokens) * 100 : 0;
   const providerEntries = pc
@@ -479,7 +485,7 @@ export default function CachePage() {
                     icon="speed"
                     label={t("cacheRate")}
                     value={`${promptCacheRate.toFixed(1)}%`}
-                    sub={`${pc.requestsWithCacheControl.toLocaleString()} / ${pc.totalRequests.toLocaleString()} ${t("requests").toLowerCase()}`}
+                    sub={`${cacheRateCached.toLocaleString()} / ${cacheRateTotal.toLocaleString()} ${t("requests").toLowerCase()} · ${tRoot("combos.excludedProviders")}: deepseek-web`}
                     accent="text-success"
                     size="hero"
                   />
