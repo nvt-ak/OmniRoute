@@ -4,7 +4,52 @@
 
 import { getDbInstance } from "../core";
 
-export async function getCacheMetrics() {
+/**
+ * NULL-safe `provider NOT IN (...)` predicate. NULL-provider rows are kept, because a
+ * plain `NOT IN` drops NULLs in SQLite. Returns an empty fragment when nothing is excluded.
+ */
+function buildExcludeClause(excludeProviders: string[] | undefined): {
+  sql: string;
+  params: string[];
+} {
+  const providers = (excludeProviders ?? []).filter((p) => typeof p === "string" && p.length > 0);
+  if (providers.length === 0) return { sql: "", params: [] };
+  const placeholders = providers.map(() => "?").join(", ");
+  return {
+    sql: `(provider IS NULL OR provider NOT IN (${placeholders}))`,
+    params: providers,
+  };
+}
+
+/**
+ * Display-only Cache Rate counts. Excludes `excludeProviders` from both numerator and
+ * denominator, leaving the original top-level fields untouched.
+ */
+function getCacheRateCounts(db: ReturnType<typeof getDbInstance>, excludeProviders: string[]) {
+  const exclude = buildExcludeClause(excludeProviders);
+  const where = exclude.sql ? ` WHERE ${exclude.sql}` : "";
+  const row = db
+    .prepare(
+      `
+      SELECT
+        COUNT(*) as totalRequests,
+        SUM(CASE WHEN tokens_cache_read > 0 OR tokens_cache_creation > 0 THEN 1 ELSE 0 END) as requestsWithCacheControl
+      FROM usage_history${where}
+    `
+    )
+    .get(...exclude.params) as
+    { totalRequests: number | null; requestsWithCacheControl: number | null } | undefined;
+  return {
+    totalRequests: row?.totalRequests || 0,
+    requestsWithCacheControl: row?.requestsWithCacheControl || 0,
+  };
+}
+
+/**
+ * @param cacheRateExcludeProviders Providers omitted ONLY from `promptCache.cacheRate`
+ *   (the Cache Rate card). Every other field is unfiltered and unchanged.
+ */
+export async function getCacheMetrics(cacheRateExcludeProviders: string[] = []) {
   const db = getDbInstance();
 
   try {
@@ -149,6 +194,8 @@ export async function getCacheMetrics() {
       estimatedCostSaved,
       byProvider,
       byStrategy,
+      // Display-only scope for the Cache Rate card; the label must state the exclusion.
+      cacheRate: getCacheRateCounts(db, cacheRateExcludeProviders),
       lastUpdated: new Date().toISOString(),
     };
   } catch (error) {
@@ -163,6 +210,10 @@ export async function getCacheMetrics() {
       estimatedCostSaved: 0,
       byProvider: {},
       byStrategy: {},
+      cacheRate: {
+        totalRequests: 0,
+        requestsWithCacheControl: 0,
+      },
       lastUpdated: new Date().toISOString(),
     };
   }

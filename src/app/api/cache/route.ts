@@ -23,6 +23,9 @@ import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 /** Key prefix of the opt-in history entries in the shared analytics response cache. */
 const CACHE_METRICS_KEY_PREFIX = "cache-metrics?";
 
+/** Providers omitted ONLY from the displayed Cache Rate card (promptCache.cacheRate). */
+const CACHE_RATE_EXCLUDED_PROVIDERS = ["deepseek-web"];
+
 function errorMessage(error: unknown): string {
   return sanitizeErrorMessage(error);
 }
@@ -53,7 +56,7 @@ export async function GET(req: NextRequest) {
     // which is safe for this read-only stats endpoint.
     const [idempotencyStats, promptCacheMetrics, trend, settings] = await Promise.all([
       getIdempotencyStats(),
-      history ? history.body.promptCache : getCacheMetrics(),
+      history ? history.body.promptCache : getCacheMetrics(CACHE_RATE_EXCLUDED_PROVIDERS),
       history ? history.body.trend : getCacheTrend(trendHours),
       getCachedSettings().catch(() => ({})),
     ]);
@@ -145,7 +148,7 @@ async function readCachedHistory(
     `${CACHE_METRICS_KEY_PREFIX}trendHours=${trendHours}`,
     async () => {
       const [promptCache, trend] = await Promise.all([
-        getCacheMetrics(),
+        getCacheMetrics(CACHE_RATE_EXCLUDED_PROVIDERS),
         getCacheTrend(trendHours),
       ]);
       return NextResponse.json({ promptCache, trend });
