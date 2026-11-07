@@ -4,17 +4,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-// Fail-closed isolation: the caller must provide a fresh, empty temp DATA_DIR.
-// This is asserted BEFORE any app module is imported, so no live database is touched.
+// The suite's DATA_DIR may be shared; create a private child before any app import.
 const dataDir = process.env.DATA_DIR;
 assert.ok(dataDir && path.isAbsolute(dataDir), "explicit absolute DATA_DIR is required");
 const realTmp = fs.realpathSync(os.tmpdir());
-const realDataDir = fs.realpathSync(dataDir);
+const suiteDataDir = fs.realpathSync(dataDir);
 assert.ok(
-  realDataDir.startsWith(`${realTmp}${path.sep}`),
-  `DATA_DIR must live under the OS temp dir, got ${realDataDir}`
+  suiteDataDir.startsWith(`${realTmp}${path.sep}`),
+  `DATA_DIR must live under the OS temp dir, got ${suiteDataDir}`
 );
+const realDataDir = fs.realpathSync(fs.mkdtempSync(path.join(suiteDataDir, "cache-rate-")));
 assert.deepEqual(fs.readdirSync(realDataDir), [], "DATA_DIR must be fresh and empty");
+process.env.DATA_DIR = realDataDir;
 
 const { getCacheMetrics } = await import("../../src/lib/db/settings/cacheMetrics.ts");
 const core = await import("../../src/lib/db/core.ts");

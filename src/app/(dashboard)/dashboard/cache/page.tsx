@@ -485,7 +485,7 @@ export default function CachePage() {
                     icon="speed"
                     label={t("cacheRate")}
                     value={`${promptCacheRate.toFixed(1)}%`}
-                    sub={`${cacheRateCached.toLocaleString()} / ${cacheRateTotal.toLocaleString()} ${t("requests").toLowerCase()} · Excluding: deepseek-web`}
+                    sub={`${cacheRateCached.toLocaleString()} / ${cacheRateTotal.toLocaleString()} ${t("requests").toLowerCase()} · ${tRoot("combos.excludedProviders")}: deepseek-web`}
                     accent="text-success"
                     size="hero"
                   />
