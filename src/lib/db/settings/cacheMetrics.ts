@@ -22,6 +22,41 @@ function buildExcludeClause(excludeProviders: string[] | undefined): {
 }
 
 /**
+ * Aggregate row of the provider / provider+model breakdown below.
+ *
+ * `cacheCreationReported` exists because not every backend has a cache-WRITE
+ * counter: OpenAI automatic prefix caching and Gemini implicit caching only
+ * report reads (`cached_tokens` / `cachedContentTokenCount`), and OmniRoute
+ * stores the missing write leg as `0` (the column is NOT NULL). Rendering that
+ * `0` next to a provider that obviously caches (430M cached read tokens and not
+ * a single write) claims it wrote zero tokens, when the metric does not exist.
+ */
+export interface CacheBreakdownStats {
+  requests: number;
+  totalRequests: number;
+  cachedRequests: number;
+  inputTokens: number;
+  cachedTokens: number;
+  cacheCreationTokens: number;
+  /**
+   * False only when the row demonstrably caches (reads > 0) yet never reported a
+   * single write token — a read-only/implicit cache backend, where the write
+   * column is "not applicable" rather than "0". True when a write was reported,
+   * or when there is no cache activity to judge from (a genuine 0).
+   *
+   * The window is all of `usage_history` (this aggregation has no time filter),
+   * so a provider that ever writes keeps reporting numbers in a fully-warm
+   * period.
+   */
+  cacheCreationReported: boolean;
+}
+
+/** See {@link CacheBreakdownStats.cacheCreationReported}. */
+function isCacheCreationReported(cachedRequests: number, cacheCreationTokens: number): boolean {
+  return cacheCreationTokens > 0 || cachedRequests === 0;
+}
+
+/**
  * Display-only Cache Rate counts. Excludes `excludeProviders` from both numerator and
  * denominator, leaving the original top-level fields untouched.
  */
@@ -111,6 +146,37 @@ export async function getCacheMetrics(cacheRateExcludeProviders: string[] = []) 
       cacheCreationTokens: number | null;
     }>;
 
+    // Aggregate by provider + model so a provider that pools heterogeneous
+    // backends (a remote router, a combo target) does not hide them behind one
+    // blended number. `haiku 95% + gpt 32%` and `both 73%` are very different
+    // stories, and only the split shows which model to fix.
+    const byProviderModelRows = db
+      .prepare(
+        `
+      SELECT
+        provider,
+        COALESCE(model, '') as model,
+        COUNT(*) as totalRequests,
+        SUM(CASE WHEN tokens_cache_read > 0 OR tokens_cache_creation > 0 THEN 1 ELSE 0 END) as cachedRequests,
+        SUM(CASE WHEN tokens_cache_read > 0 OR tokens_cache_creation > 0 THEN tokens_input ELSE 0 END) as inputTokens,
+        SUM(tokens_cache_read) as cachedTokens,
+        SUM(tokens_cache_creation) as cacheCreationTokens
+      FROM usage_history
+      WHERE provider IS NOT NULL
+      GROUP BY provider, model
+      HAVING cachedRequests > 0
+    `
+      )
+      .all() as Array<{
+      provider: string;
+      model: string;
+      totalRequests: number;
+      cachedRequests: number;
+      inputTokens: number | null;
+      cachedTokens: number | null;
+      cacheCreationTokens: number | null;
+    }>;
+
     // Aggregate by combo strategy (direct requests stored as 'direct')
     const byStrategyRows = db
       .prepare(
@@ -143,25 +209,35 @@ export async function getCacheMetrics(cacheRateExcludeProviders: string[] = []) 
       100;
 
     // Build byProvider object
-    const byProvider: Record<
-      string,
-      {
-        requests: number;
-        totalRequests: number;
-        cachedRequests: number;
-        inputTokens: number;
-        cachedTokens: number;
-        cacheCreationTokens: number;
-      }
-    > = {};
+    const byProvider: Record<string, CacheBreakdownStats> = {};
     for (const row of byProviderRows) {
+      const cachedRequests = row.cachedRequests;
+      const cacheCreationTokens = row.cacheCreationTokens || 0;
       byProvider[row.provider] = {
-        requests: row.cachedRequests,
+        requests: cachedRequests,
         totalRequests: row.totalRequests,
-        cachedRequests: row.cachedRequests,
+        cachedRequests,
         inputTokens: row.inputTokens || 0,
         cachedTokens: row.cachedTokens || 0,
-        cacheCreationTokens: row.cacheCreationTokens || 0,
+        cacheCreationTokens,
+        cacheCreationReported: isCacheCreationReported(cachedRequests, cacheCreationTokens),
+      };
+    }
+
+    // Build byProviderModel object (provider → model → stats)
+    const byProviderModel: Record<string, Record<string, CacheBreakdownStats>> = {};
+    for (const row of byProviderModelRows) {
+      const cachedRequests = row.cachedRequests;
+      const cacheCreationTokens = row.cacheCreationTokens || 0;
+      const perModel = (byProviderModel[row.provider] ??= {});
+      perModel[row.model] = {
+        requests: cachedRequests,
+        totalRequests: row.totalRequests,
+        cachedRequests,
+        inputTokens: row.inputTokens || 0,
+        cachedTokens: row.cachedTokens || 0,
+        cacheCreationTokens,
+        cacheCreationReported: isCacheCreationReported(cachedRequests, cacheCreationTokens),
       };
     }
 
@@ -193,6 +269,7 @@ export async function getCacheMetrics(cacheRateExcludeProviders: string[] = []) 
       tokensSaved,
       estimatedCostSaved,
       byProvider,
+      byProviderModel,
       byStrategy,
       // Display-only scope for the Cache Rate card; the label must state the exclusion.
       cacheRate: getCacheRateCounts(db, cacheRateExcludeProviders),
@@ -209,6 +286,7 @@ export async function getCacheMetrics(cacheRateExcludeProviders: string[] = []) 
       tokensSaved: 0,
       estimatedCostSaved: 0,
       byProvider: {},
+      byProviderModel: {},
       byStrategy: {},
       cacheRate: {
         totalRequests: 0,

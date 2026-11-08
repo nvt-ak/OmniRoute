@@ -21,6 +21,9 @@ import { useNotificationStore } from "@/store/notificationStore";
 import { useTranslations } from "next-intl";
 import { useProviderNodeMap, resolveProviderName } from "@/lib/display/useProviderNodeMap";
 import CacheEntriesTab from "./components/CacheEntriesTab";
+import ProviderCacheBreakdown, {
+  type CacheProviderStat as PromptCacheProviderStats,
+} from "./components/ProviderCacheBreakdown";
 import ReasoningCacheTab from "./components/ReasoningCacheTab";
 
 interface SemanticCacheStats {
@@ -32,15 +35,6 @@ interface SemanticCacheStats {
   tokensSaved: number;
 }
 
-interface PromptCacheProviderStats {
-  requests: number;
-  totalRequests?: number;
-  cachedRequests?: number;
-  inputTokens: number;
-  cachedTokens: number;
-  cacheCreationTokens: number;
-}
-
 interface PromptCacheMetrics {
   totalRequests: number;
   requestsWithCacheControl: number;
@@ -50,6 +44,8 @@ interface PromptCacheMetrics {
   tokensSaved: number;
   estimatedCostSaved: number;
   byProvider: Record<string, PromptCacheProviderStats>;
+  /** Optional: older cached responses predate the per-model split. */
+  byProviderModel?: Record<string, Record<string, PromptCacheProviderStats>>;
   byStrategy: Record<string, PromptCacheProviderStats>;
   cacheRate?: {
     totalRequests: number;
@@ -523,77 +519,11 @@ export default function CachePage() {
                   />
                 </div>
 
-                <div className="w-full rounded-xl border border-border bg-bg-subtle p-5">
-                  <div>
-                    <h3 className="text-sm font-medium text-text-main">{t("byProvider")}</h3>
-                    <p className="mt-1 text-sm text-text-muted">{t("providerCacheRateDesc")}</p>
-                  </div>
-
-                  {providerEntries.length > 0 ? (
-                    <Table
-                      className="text-sm"
-                      containerClassName="mt-3"
-                      scrollbarLabel={t("byProvider")}
-                    >
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>{t("provider")}</TableHead>
-                          <TableHead>{t("inputTokens")}</TableHead>
-                          <TableHead>{t("cachedTokensCol")}</TableHead>
-                          <TableHead>{t("cacheCreation")}</TableHead>
-                          <TableHead>{t("cacheReuseRatio")}</TableHead>
-                          <TableHead>{t("cacheRate")}</TableHead>
-                          <TableHead>{t("cachedRequests")}</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {providerEntries.map(([provider, data]) => {
-                          const cachedRequests = data.cachedRequests ?? data.requests;
-                          const totalRequests = data.totalRequests ?? cachedRequests;
-                          const cacheRate =
-                            totalRequests > 0 ? (cachedRequests / totalRequests) * 100 : 0;
-                          const reuseRatio =
-                            data.inputTokens > 0 ? (data.cachedTokens / data.inputTokens) * 100 : 0;
-
-                          return (
-                            <TableRow key={provider}>
-                              <TableCell>
-                                <div className="font-medium text-text-main">
-                                  {resolveProviderName(provider, nodeMap)}
-                                </div>
-                                <div className="mt-1 text-xs text-text-muted">
-                                  {totalRequests.toLocaleString()} {t("requests").toLowerCase()}
-                                </div>
-                              </TableCell>
-                              <TableCell className="tabular-nums text-text-main">
-                                {data.inputTokens.toLocaleString()}
-                              </TableCell>
-                              <TableCell className="tabular-nums text-chart-2">
-                                {data.cachedTokens.toLocaleString()}
-                              </TableCell>
-                              <TableCell className="tabular-nums text-chart-4">
-                                {data.cacheCreationTokens.toLocaleString()}
-                              </TableCell>
-                              <TableCell className="font-semibold tabular-nums text-info">
-                                {reuseRatio.toFixed(1)}%
-                              </TableCell>
-                              <TableCell className="font-semibold tabular-nums text-success">
-                                {cacheRate.toFixed(1)}%
-                              </TableCell>
-                              <TableCell className="tabular-nums text-text-main">
-                                {cachedRequests.toLocaleString()} / {totalRequests.toLocaleString()}
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  ) : (
-                    <div className="mt-3 rounded-lg border border-dashed border-border px-4 py-6 text-sm text-text-muted">
-                      {t("noPromptCacheData")}
-                    </div>
-                  )}
-                </div>
+                <ProviderCacheBreakdown
+                  entries={providerEntries}
+                  byProviderModel={pc.byProviderModel}
+                  resolveProviderName={(provider) => resolveProviderName(provider, nodeMap)}
+                />
 
                 <PromptTrendPanel
                   trend={trend}
