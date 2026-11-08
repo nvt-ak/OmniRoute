@@ -59,10 +59,18 @@ function isCacheCreationReported(cachedRequests: number, cacheCreationTokens: nu
 /**
  * Display-only Cache Rate counts. Excludes `excludeProviders` from both numerator and
  * denominator, leaving the original top-level fields untouched.
+ *
+ * Failed requests are dropped from both sides as well: a request that errored never got
+ * a chance to hit the cache, so counting it reports the upstream's error rate, not cache
+ * efficiency. On a real dataset this is not a rounding error — 9,915 of 35,243 rows
+ * (28%) are failures, and they dragged the card from ~94% down to 68%.
  */
 function getCacheRateCounts(db: ReturnType<typeof getDbInstance>, excludeProviders: string[]) {
   const exclude = buildExcludeClause(excludeProviders);
-  const where = exclude.sql ? ` WHERE ${exclude.sql}` : "";
+  // `usage_history.success` is written as 0/1 (never NULL), so `success = 1` is exact.
+  const conditions = ["success = 1"];
+  if (exclude.sql) conditions.push(exclude.sql);
+  const where = ` WHERE ${conditions.join(" AND ")}`;
   const row = db
     .prepare(
       `

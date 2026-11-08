@@ -477,11 +477,14 @@ export default function CachePage() {
             {pc ? (
               <>
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                  {/* Scope: successful requests only, deepseek-web excluded. Failed
+                      requests never get a chance to hit the cache, so including them
+                      measures the upstream's error rate instead of cache efficiency. */}
                   <StatCard
                     icon="speed"
                     label={t("cacheRate")}
                     value={`${promptCacheRate.toFixed(1)}%`}
-                    sub={`${cacheRateCached.toLocaleString()} / ${cacheRateTotal.toLocaleString()} ${t("requests").toLowerCase()} · ${tRoot("combos.excludedProviders")}: deepseek-web`}
+                    sub={`${cacheRateCached.toLocaleString()} / ${cacheRateTotal.toLocaleString()} ${tRoot("common.successful").toLowerCase()} ${t("requests").toLowerCase()} · ${tRoot("combos.excludedProviders")}: deepseek-web`}
                     accent="text-success"
                     size="hero"
                   />

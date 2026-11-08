@@ -18,6 +18,7 @@ interface UsageRow {
   tokensCacheRead: number;
   tokensCacheCreation: number;
   comboStrategy?: string | null;
+  success?: 0 | 1;
 }
 
 function seed(rows: UsageRow[]) {
@@ -51,7 +52,7 @@ function seed(rows: UsageRow[]) {
     `
     INSERT INTO usage_history (provider, model, tokens_input, tokens_output,
       tokens_cache_read, tokens_cache_creation, combo_strategy, status, success, timestamp)
-    VALUES (?, ?, ?, 0, ?, ?, ?, '200', 1, ?)
+    VALUES (?, ?, ?, 0, ?, ?, ?, '200', ?, ?)
   `
   );
   const now = new Date().toISOString();
@@ -63,6 +64,7 @@ function seed(rows: UsageRow[]) {
       row.tokensCacheRead,
       row.tokensCacheCreation,
       row.comboStrategy ?? null,
+      row.success ?? 1,
       now
     );
   }
@@ -229,4 +231,79 @@ test("providers below the cache-activity threshold are excluded from the breakdo
   assert.equal(row.inputTokens, 500);
   assert.equal(row.cacheCreationReported, true);
   assert.equal(metrics.byProviderModel["writes-only"]["claude-sonnet"].cacheCreationReported, true);
+});
+
+test("Cache Rate counts only successful requests", async () => {
+  seed([
+    { provider: "p", model: "m", tokensInput: 100, tokensCacheRead: 80, tokensCacheCreation: 0 },
+    { provider: "p", model: "m", tokensInput: 100, tokensCacheRead: 0, tokensCacheCreation: 0 },
+    // A failed request never got a chance to hit the cache: counting it reports the
+    // upstream's error rate, not cache efficiency.
+    {
+      provider: "p",
+      model: "m",
+      tokensInput: 0,
+      tokensCacheRead: 0,
+      tokensCacheCreation: 0,
+      success: 0,
+    },
+    {
+      provider: "p",
+      model: "m",
+      tokensInput: 0,
+      tokensCacheRead: 0,
+      tokensCacheCreation: 0,
+      success: 0,
+    },
+  ]);
+
+  const metrics = await getCacheMetrics();
+
+  assert.equal(metrics.cacheRate.totalRequests, 2, "failures leave the denominator");
+  assert.equal(metrics.cacheRate.requestsWithCacheControl, 1);
+  // The raw table totals keep describing the whole table — only the card is scoped.
+  assert.equal(metrics.totalRequests, 4);
+});
+
+test("the success filter composes with the provider exclusion", async () => {
+  seed([
+    {
+      provider: "deepseek-web",
+      model: "deepseek-chat",
+      tokensInput: 100,
+      tokensCacheRead: 50,
+      tokensCacheCreation: 0,
+    },
+    {
+      provider: "deepseek-web",
+      model: "deepseek-chat",
+      tokensInput: 0,
+      tokensCacheRead: 0,
+      tokensCacheCreation: 0,
+      success: 0,
+    },
+    {
+      provider: "claude",
+      model: "claude-opus",
+      tokensInput: 100,
+      tokensCacheRead: 90,
+      tokensCacheCreation: 0,
+    },
+    {
+      provider: "claude",
+      model: "claude-opus",
+      tokensInput: 0,
+      tokensCacheRead: 0,
+      tokensCacheCreation: 0,
+      success: 0,
+    },
+  ]);
+
+  const metrics = await getCacheMetrics(["deepseek-web"]);
+
+  assert.equal(metrics.cacheRate.totalRequests, 1, "only the successful, non-excluded row");
+  assert.equal(metrics.cacheRate.requestsWithCacheControl, 1);
+  // The breakdown is a different view: it still shows both providers, and the
+  // exclusion never touches it.
+  assert.deepEqual(Object.keys(metrics.byProvider).sort(), ["claude", "deepseek-web"]);
 });
